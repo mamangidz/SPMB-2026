@@ -1,0 +1,6 @@
+{
+  "name": "Sistem Monitoring & Presensi Foto Venue BDK",
+  "description": "Aplikasi Web Admin Dashboard & Aplikasi Selular Android untuk monitoring, verifikasi, dan unggah foto kegiatan venue dengan timestamp serta koordinat GPS real-time.",
+  "requestFramePermissions": ["geolocation", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

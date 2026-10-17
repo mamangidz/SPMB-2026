@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isValidId(id) {
+      return id is string && id.size() <= 128;
+    }
+
+    match /users/{userId} {
+      allow read, write: if isValidId(userId);
+    }
+
+    match /photos/{photoId} {
+      allow read, write: if isValidId(photoId);
+    }
+
+    match /notifications/{notificationId} {
+      allow read, write: if isValidId(notificationId);
+    }
+
+    match /activity_logs/{logId} {
+      allow read, write: if isValidId(logId);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

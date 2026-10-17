@@ -1,0 +1,101 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User account and venue assignment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "no": { "type": "number", "description": "Table row number" },
+        "venue": { "type": "string", "description": "Venue name" },
+        "username": { "type": "string", "description": "Username for authentication" },
+        "password": { "type": "string", "description": "User password" },
+        "role": { "type": "string", "enum": ["admin", "user"], "description": "User role" },
+        "ujiFungsi": { "type": "string", "description": "Uji fungsi date string" },
+        "tahap1Tasks": { "type": "array", "description": "List of preparation photo items required" },
+        "tahap2Dates": { "type": "array", "description": "List of execution dates required" },
+        "isOnline": { "type": "boolean", "description": "Online presence status" },
+        "lastLoginAt": { "type": "string", "description": "ISO timestamp of last login" },
+        "createdAt": { "type": "string", "description": "ISO creation timestamp" },
+        "updatedAt": { "type": "string", "description": "ISO update timestamp" }
+      },
+      "required": ["username", "role", "venue"]
+    },
+    "PhotoUpload": {
+      "title": "PhotoUpload",
+      "description": "Photo uploaded by venue user with timestamp and geolocation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "userId": { "type": "string", "description": "User ID" },
+        "username": { "type": "string", "description": "Username of uploader" },
+        "venue": { "type": "string", "description": "Venue name" },
+        "stage": { "type": "string", "enum": ["persiapan", "pelaksanaan"], "description": "Stage of task" },
+        "category": { "type": "string", "description": "Photo category name or date" },
+        "photoDate": { "type": "string", "description": "Date formatted string" },
+        "photoTime": { "type": "string", "description": "Time formatted string" },
+        "latitude": { "type": "number", "description": "GPS latitude" },
+        "longitude": { "type": "number", "description": "GPS longitude" },
+        "accuracy": { "type": "number", "description": "GPS accuracy in meters" },
+        "locationName": { "type": "string", "description": "Resolved or estimated location name" },
+        "imageUrl": { "type": "string", "description": "Base64 or image data URI" },
+        "status": { "type": "string", "enum": ["submitted", "verified", "rejected"], "description": "Verification status" },
+        "driveFileId": { "type": "string", "description": "Google Drive file ID" },
+        "driveFileName": { "type": "string", "description": "Standardized filename matching table" },
+        "driveFileUrl": { "type": "string", "description": "Google Drive web view link" },
+        "driveStatus": { "type": "string", "enum": ["synced", "local_only", "failed"], "description": "Google Drive synchronization status" },
+        "notes": { "type": "string", "description": "Optional notes from user or admin" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" }
+      },
+      "required": ["userId", "username", "venue", "stage", "category", "photoDate", "photoTime", "latitude", "longitude", "imageUrl"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "System and activity notifications",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "type": { "type": "string", "enum": ["login", "upload", "crud", "verify"], "description": "Notification category" },
+        "title": { "type": "string", "description": "Headline" },
+        "message": { "type": "string", "description": "Detailed text" },
+        "venue": { "type": "string", "description": "Associated venue" },
+        "username": { "type": "string", "description": "Associated user" },
+        "read": { "type": "boolean", "description": "Read status" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["type", "title", "message", "createdAt"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Audit trail of all actions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "action": { "type": "string", "description": "Action performed" },
+        "username": { "type": "string", "description": "User who performed action" },
+        "venue": { "type": "string", "description": "Venue" },
+        "details": { "type": "string", "description": "Extra details" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["action", "username", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Stores user profiles, venue schedules, and login state"
+    },
+    "/photos/{photoId}": {
+      "schema": { "$ref": "#/entities/PhotoUpload" },
+      "description": "Stores photo uploads with GPS coordinates, date, and time"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Stores real-time push and in-app notifications for activities and logins"
+    },
+    "/activity_logs/{logId}": {
+      "schema": { "$ref": "#/entities/ActivityLog" },
+      "description": "Stores real-time activity and audit log"
+    }
+  }
+}
