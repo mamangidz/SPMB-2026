@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, User, ArrowRight, ShieldCheck, KeyRound, ShieldAlert, Sparkles, Building2 } from 'lucide-react';
+import { Lock, User, ArrowRight, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { UserAccount } from '../types';
 import { INITIAL_USERS } from '../data/initialData';
 
@@ -10,11 +10,10 @@ interface LoginFormProps {
 }
 
 export const LoginForm: React.FC<LoginFormProps> = ({ users, onLogin, isLoading }) => {
-  // REQUIREMENT 7: Form user login setiap venue dan KOSONGKAN FIELD INPUT secara default
+  // Form user login setiap venue dengan input kosong secara default
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string>('');
-  const [showQuickAccounts, setShowQuickAccounts] = useState<boolean>(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,7 +27,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({ users, onLogin, isLoading 
       return;
     }
 
-    // 1. Direct admin bypass check: Always allow admin login (accepts both admin123 and admin)
+    // 1. Direct admin check: Always allow admin login (accepts both admin123 and admin)
     if (cleanUsername === 'admin' && (cleanPassword === 'admin123' || cleanPassword === 'admin')) {
       const adminAcc: UserAccount = users.find((u) => u.username.toLowerCase() === 'admin') ||
         INITIAL_USERS.find((u) => u.username.toLowerCase() === 'admin') || {
@@ -66,29 +65,6 @@ export const LoginForm: React.FC<LoginFormProps> = ({ users, onLogin, isLoading 
     }
   };
 
-  const selectAccountQuickFill = (acc: UserAccount) => {
-    setUsername(acc.username);
-    setPassword(acc.password);
-    setShowQuickAccounts(false);
-  };
-
-  const handleQuickAdminLogin = () => {
-    const adminAcc: UserAccount = users.find((u) => u.username.toLowerCase() === 'admin') ||
-      INITIAL_USERS.find((u) => u.username.toLowerCase() === 'admin') || {
-        id: 'user_21',
-        no: 21,
-        venue: 'Pusat',
-        username: 'admin',
-        password: 'admin123',
-        role: 'admin',
-        ujiFungsi: '-',
-        tahap1Tasks: [],
-        tahap2Dates: [],
-        isOnline: true
-      };
-    onLogin(adminAcc);
-  };
-
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 text-slate-100 font-['Plus_Jakarta_Sans',sans-serif]">
       {/* Background radial accent glow */}
@@ -106,26 +82,6 @@ export const LoginForm: React.FC<LoginFormProps> = ({ users, onLogin, isLoading 
           <p className="text-xs text-slate-400 mt-1">
             Silakan masukkan kredensial akun venue Anda untuk melanjutkan.
           </p>
-        </div>
-
-        {/* Quick Admin Login Shortcut Banner */}
-        <div className="mb-5 p-3 rounded-2xl bg-indigo-950/40 border border-indigo-800/40 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-xl bg-indigo-600/30 text-indigo-400 flex items-center justify-center shrink-0">
-              <Building2 className="w-4 h-4" />
-            </div>
-            <div className="min-w-0">
-              <div className="text-xs font-bold text-indigo-200">Admin Pusat</div>
-              <div className="text-[10px] text-indigo-400 font-mono truncate">admin / admin123</div>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={handleQuickAdminLogin}
-            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shrink-0 transition-colors shadow flex items-center gap-1"
-          >
-            Masuk Admin <Sparkles className="w-3 h-3 text-amber-300" />
-          </button>
         </div>
 
         {/* Error Alert */}
@@ -189,62 +145,8 @@ export const LoginForm: React.FC<LoginFormProps> = ({ users, onLogin, isLoading 
           </button>
         </form>
 
-        {/* Quick Credentials Helper popover */}
-        <div className="mt-6 pt-4 border-t border-slate-800 text-center">
-          <button
-            type="button"
-            onClick={() => setShowQuickAccounts(!showQuickAccounts)}
-            className="text-xs text-sky-400 hover:text-sky-300 font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <KeyRound className="w-3.5 h-3.5" />
-            {showQuickAccounts ? 'Sembunyikan Bantuan Akun' : 'Lihat Daftar 21 Akun Uji Coba'}
-          </button>
-
-          {showQuickAccounts && (
-            <div className="mt-3 bg-slate-950/90 rounded-2xl p-3 border border-slate-800 text-left text-xs max-h-56 overflow-y-auto space-y-1.5">
-              <div className="text-[11px] font-bold text-slate-300 mb-1 flex items-center justify-between">
-                <span>Klik untuk mengisi form:</span>
-                <span className="text-[10px] text-slate-500 font-mono">21 akun terdaftar</span>
-              </div>
-
-              {/* Admin Button */}
-              <button
-                type="button"
-                onClick={() => {
-                  setUsername('admin');
-                  setPassword('admin123');
-                  setShowQuickAccounts(false);
-                }}
-                className="w-full p-2 rounded-lg bg-indigo-950/60 hover:bg-indigo-900/70 border border-indigo-700/60 text-left flex items-center justify-between text-indigo-300 font-bold transition-colors cursor-pointer"
-              >
-                <span>🏢 Pusat (Admin Dashboard)</span>
-                <span className="font-mono text-[10px] text-indigo-300">admin / admin123</span>
-              </button>
-
-              {/* User Petugas Venues */}
-              {(users.length > 0 ? users : INITIAL_USERS)
-                .filter((u) => u.role === 'user')
-                .map((acc) => (
-                  <button
-                    key={acc.id}
-                    type="button"
-                    onClick={() => selectAccountQuickFill(acc)}
-                    className="w-full p-2 rounded-lg bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 text-left flex items-center justify-between transition-colors text-slate-300 cursor-pointer"
-                  >
-                    <span className="font-semibold text-slate-200">
-                      📱 {acc.venue}
-                    </span>
-                    <span className="font-mono text-[10px] text-sky-400">
-                      {acc.username} / {acc.password}
-                    </span>
-                  </button>
-                ))}
-            </div>
-          )}
-        </div>
-
         {/* Security watermark badge */}
-        <div className="mt-6 flex items-center justify-center gap-2 text-[10px] text-slate-500">
+        <div className="mt-6 pt-4 border-t border-slate-800/80 flex items-center justify-center gap-2 text-[10px] text-slate-500">
           <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
           <span>Tersinkronisasi Real-Time dengan Firebase Firestore</span>
         </div>
