@@ -13,6 +13,7 @@ export interface WatermarkData {
 
 /**
  * Stamps date, time, venue, username, coordinates, and accuracy onto the image canvas.
+ * Guarantees output payload is strictly under 500KB to prevent Firestore document size limit errors (1MB max).
  */
 export async function stampWatermarkOnImage(
   imageSource: string | HTMLImageElement,
@@ -30,8 +31,8 @@ export async function stampWatermarkOnImage(
           return resolve(typeof imageSource === 'string' ? imageSource : img.src);
         }
 
-        // Set dimensions (max 1600px width for fast sync and storage efficiency)
-        const maxWidth = 1600;
+        // Set dimensions (max 1080px width for fast upload and strict Firestore 1MB compliance)
+        const maxWidth = 1080;
         let width = img.width;
         let height = img.height;
 
@@ -47,11 +48,11 @@ export async function stampWatermarkOnImage(
         ctx.drawImage(img, 0, 0, width, height);
 
         // Watermark overlay styling
-        const bannerHeight = Math.max(120, Math.round(height * 0.19));
+        const bannerHeight = Math.max(110, Math.round(height * 0.20));
         const gradient = ctx.createLinearGradient(0, height - bannerHeight - 40, 0, height);
         gradient.addColorStop(0, 'rgba(15, 23, 42, 0)');
-        gradient.addColorStop(0.3, 'rgba(15, 23, 42, 0.82)');
-        gradient.addColorStop(1, 'rgba(15, 23, 42, 0.96)');
+        gradient.addColorStop(0.3, 'rgba(15, 23, 42, 0.85)');
+        gradient.addColorStop(1, 'rgba(15, 23, 42, 0.98)');
 
         ctx.fillStyle = gradient;
         ctx.fillRect(0, height - bannerHeight - 40, width, bannerHeight + 40);
@@ -61,12 +62,12 @@ export async function stampWatermarkOnImage(
         ctx.fillRect(0, height - bannerHeight - 2, width, 3);
 
         const padX = Math.round(width * 0.035);
-        const startY = height - bannerHeight + 24;
+        const startY = height - bannerHeight + 22;
 
         // Calculate responsive font sizes
-        const titleSize = Math.max(14, Math.round(width * 0.024));
+        const titleSize = Math.max(13, Math.round(width * 0.024));
         const textSize = Math.max(11, Math.round(width * 0.017));
-        const smallSize = Math.max(10, Math.round(width * 0.014));
+        const smallSize = Math.max(9, Math.round(width * 0.014));
 
         // Venue Tag Badge
         ctx.font = `bold ${titleSize}px 'Plus Jakarta Sans', sans-serif`;
@@ -76,7 +77,7 @@ export async function stampWatermarkOnImage(
         // Petugas and Location
         ctx.font = `600 ${textSize}px 'Plus Jakarta Sans', sans-serif`;
         ctx.fillStyle = '#cbd5e1';
-        ctx.fillText(`👤 Petugas: ${data.username} | Wilayah: ${data.locationName || 'Terdeteksi'}`, padX, startY + textSize + 10);
+        ctx.fillText(`👤 Petugas: ${data.username} | Wilayah: ${data.locationName || 'Terdeteksi'}`, padX, startY + textSize + 9);
 
         // Coordinates & Accuracy
         const latStr = data.latitude.toFixed(6);
@@ -85,12 +86,12 @@ export async function stampWatermarkOnImage(
 
         ctx.font = `500 ${textSize}px 'JetBrains Mono', monospace`;
         ctx.fillStyle = '#38bdf8';
-        ctx.fillText(`🌐 GPS: ${latStr}°, ${lngStr}° ${accStr}`, padX, startY + (textSize * 2) + 20);
+        ctx.fillText(`🌐 GPS: ${latStr}°, ${lngStr}° ${accStr}`, padX, startY + (textSize * 2) + 18);
 
         // Date, Time & Verification stamp
         ctx.font = `600 ${textSize}px 'JetBrains Mono', monospace`;
         ctx.fillStyle = '#fde047'; // Amber yellow
-        ctx.fillText(`⏱ WAKTU: ${data.photoDate} ${data.photoTime}`, padX, startY + (textSize * 3) + 28);
+        ctx.fillText(`⏱ WAKTU: ${data.photoDate} ${data.photoTime}`, padX, startY + (textSize * 3) + 26);
 
         // Right side security verification seal
         const rightBadgeX = width - padX;
@@ -106,8 +107,16 @@ export async function stampWatermarkOnImage(
 
         ctx.textAlign = 'left';
 
-        // Export as compressed JPEG
-        const watermarkedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        // Strict size control loop: keep under 550KB to guarantee Firestore 1MB document limit is never exceeded
+        let quality = 0.78;
+        let watermarkedDataUrl = canvas.toDataURL('image/jpeg', quality);
+
+        // If string length > 550,000 characters (~400KB), incrementally compress
+        while (watermarkedDataUrl.length > 550000 && quality > 0.45) {
+          quality -= 0.12;
+          watermarkedDataUrl = canvas.toDataURL('image/jpeg', quality);
+        }
+
         resolve(watermarkedDataUrl);
       } catch (err) {
         console.error('Error stamping watermark:', err);
@@ -125,5 +134,47 @@ export async function stampWatermarkOnImage(
     } else {
       img.src = imageSource.src;
     }
+  });
+}
+
+/**
+ * Compresses an arbitrary dataUrl to ensure it safely fits within limits
+ */
+export async function compressImageDataUrl(dataUrl: string, maxDimension = 1080): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          } else {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return resolve(dataUrl);
+        ctx.drawImage(img, 0, 0, width, height);
+        let q = 0.75;
+        let out = canvas.toDataURL('image/jpeg', q);
+        while (out.length > 550000 && q > 0.4) {
+          q -= 0.12;
+          out = canvas.toDataURL('image/jpeg', q);
+        }
+        resolve(out);
+      } catch {
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
   });
 }

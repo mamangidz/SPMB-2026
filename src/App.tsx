@@ -149,22 +149,63 @@ export default function App() {
     }
   }, []);
 
-  // 3. Real-time Photos Listener
+  // Helper to retrieve local cached photos across venues for instant rendering
+  const getAllCachedPhotos = (): PhotoUpload[] => {
+    const localList: PhotoUpload[] = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('spmb_local_photos_')) {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              localList.push(...parsed);
+            }
+          }
+        }
+      }
+    } catch {}
+    return localList;
+  };
+
+  // 3. Real-time Photos Listener with Local Cache Fallback
   useEffect(() => {
+    // Initial sync from local storage
+    const initialLocal = getAllCachedPhotos();
+    if (initialLocal.length > 0) {
+      setPhotos((prev) => {
+        const map = new Map<string, PhotoUpload>();
+        initialLocal.forEach((p) => map.set(p.id, p));
+        prev.forEach((p) => map.set(p.id, p));
+        return Array.from(map.values()).sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+      });
+    }
+
     try {
       const photosCol = collection(db, 'photos');
       const unsubscribe = onSnapshot(
         photosCol,
         (snapshot) => {
-          const list: PhotoUpload[] = [];
+          const map = new Map<string, PhotoUpload>();
+          // Include any local pending photos
+          getAllCachedPhotos().forEach((p) => map.set(p.id, p));
           snapshot.forEach((d) => {
-            list.push({ id: d.id, ...d.data() } as PhotoUpload);
+            map.set(d.id, { id: d.id, ...d.data() } as PhotoUpload);
           });
-          list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          const list = Array.from(map.values()).sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
           setPhotos(list);
         },
         (error) => {
-          console.warn('Error listening to photos:', error);
+          console.warn('Photos listener warning (using cached photos):', error);
+          const cached = getAllCachedPhotos();
+          if (cached.length > 0) {
+            setPhotos(cached);
+          }
         }
       );
       return () => unsubscribe();
