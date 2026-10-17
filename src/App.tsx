@@ -21,6 +21,7 @@ import { UserMobileApp } from './components/UserMobileApp';
 import { ToastNotification } from './components/ToastNotification';
 import { sendSystemNotification, logActivity, requestPushPermission } from './utils/notifications';
 import { playLoginAlertSound, playNotificationSound } from './utils/audio';
+import { isPhotoDeleted, markPhotoAsDeleted } from './utils/photoStorage';
 
 const STORAGE_USERS_KEY = 'spmb_stan_users_cache_v2';
 const STORAGE_SESSION_KEY = 'spmb_stan_active_session_v2';
@@ -160,7 +161,8 @@ export default function App() {
           if (raw) {
             const parsed = JSON.parse(raw);
             if (Array.isArray(parsed)) {
-              localList.push(...parsed);
+              const valid = parsed.filter((p: PhotoUpload) => p && !isPhotoDeleted(p.id));
+              localList.push(...valid);
             }
           }
         }
@@ -177,7 +179,9 @@ export default function App() {
       setPhotos((prev) => {
         const map = new Map<string, PhotoUpload>();
         initialLocal.forEach((p) => map.set(p.id, p));
-        prev.forEach((p) => map.set(p.id, p));
+        prev.forEach((p) => {
+          if (!isPhotoDeleted(p.id)) map.set(p.id, p);
+        });
         return Array.from(map.values()).sort(
           (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         );
@@ -193,7 +197,9 @@ export default function App() {
           // Include any local pending photos
           getAllCachedPhotos().forEach((p) => map.set(p.id, p));
           snapshot.forEach((d) => {
-            map.set(d.id, { id: d.id, ...d.data() } as PhotoUpload);
+            if (!isPhotoDeleted(d.id)) {
+              map.set(d.id, { id: d.id, ...d.data() } as PhotoUpload);
+            }
           });
           const list = Array.from(map.values()).sort(
             (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -356,6 +362,11 @@ export default function App() {
     });
   };
 
+  const handleDeletePhotoLocal = (photoId: string) => {
+    markPhotoAsDeleted(photoId);
+    setPhotos((prev) => prev.filter((p) => p.id !== photoId));
+  };
+
   // Handle User Logout - 100% Reliable and Instant
   const handleLogout = () => {
     const userToLogOut = currentUser;
@@ -420,6 +431,7 @@ export default function App() {
           onAddUser={handleAddUserLocal}
           onUpdateUser={handleUpdateUserLocal}
           onDeleteUser={handleDeleteUserLocal}
+          onDeletePhoto={handleDeletePhotoLocal}
           onSelectUserToSimulate={(targetUser) => setSimulatedUser(targetUser)}
         />
       ) : (

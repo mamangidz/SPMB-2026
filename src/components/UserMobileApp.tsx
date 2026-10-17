@@ -31,6 +31,7 @@ import {
   uploadPhotoToGoogleDrive,
   generateDriveFileName
 } from '../utils/googleDrive';
+import { getDeletedPhotoIds, isPhotoDeleted } from '../utils/photoStorage';
 
 interface UserMobileAppProps {
   currentUser: UserAccount;
@@ -44,7 +45,10 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       const raw = localStorage.getItem(`spmb_local_photos_${currentUser.id}`);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          const deletedIds = getDeletedPhotoIds();
+          return parsed.filter((p: PhotoUpload) => p && !deletedIds.includes(p.id));
+        }
       }
     } catch {}
     return [];
@@ -104,11 +108,13 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
           });
 
           setMyPhotos((prevLocal) => {
-            // Merge remote with any unsynced local photos
-            const map = new Map<string, PhotoUpload>();
-            prevLocal.forEach((p) => map.set(p.id, p));
-            remotePhotos.forEach((p) => map.set(p.id, p));
-            const merged = Array.from(map.values()).sort(
+            const deletedIds = getDeletedPhotoIds();
+            const validRemote = remotePhotos.filter((p) => !deletedIds.includes(p.id));
+            // Only keep unsynced local photos that are still local_only and haven't been deleted
+            const unsyncedLocal = prevLocal.filter(
+              (p) => p.driveStatus === 'local_only' && !deletedIds.includes(p.id) && !validRemote.some((r) => r.id === p.id)
+            );
+            const merged = [...validRemote, ...unsyncedLocal].sort(
               (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
             );
             try {
@@ -135,7 +141,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
         if (!raw) return;
         const list: PhotoUpload[] = JSON.parse(raw);
         for (const p of list) {
-          if (p.driveStatus === 'local_only' || !p.status || p.status === 'submitted') {
+          if (!isPhotoDeleted(p.id) && (p.driveStatus === 'local_only' || !p.status || p.status === 'submitted')) {
             try {
               await setDoc(doc(db, 'photos', p.id), p, { merge: true });
             } catch {}

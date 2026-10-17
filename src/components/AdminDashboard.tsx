@@ -38,6 +38,7 @@ import { db } from '../firebase';
 import { UserAccount, PhotoUpload, SystemNotification, ActivityLog } from '../types';
 import { INITIAL_USERS, STANDARD_TAHAP1_TASKS } from '../data/initialData';
 import { sendSystemNotification, logActivity, requestPushPermission } from '../utils/notifications';
+import { markPhotoAsDeleted } from '../utils/photoStorage';
 
 interface AdminDashboardProps {
   currentUser: UserAccount;
@@ -49,6 +50,7 @@ interface AdminDashboardProps {
   onAddUser?: (user: UserAccount) => void;
   onUpdateUser?: (user: UserAccount) => void;
   onDeleteUser?: (userId: string) => void;
+  onDeletePhoto?: (photoId: string) => void;
   onSelectUserToSimulate?: (user: UserAccount) => void;
 }
 
@@ -62,6 +64,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onAddUser,
   onUpdateUser,
   onDeleteUser,
+  onDeletePhoto,
   onSelectUserToSimulate
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'photos' | 'logs'>('overview');
@@ -81,6 +84,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
   const [inspectingPhoto, setInspectingPhoto] = useState<PhotoUpload | null>(null);
+  const [deletingPhoto, setDeletingPhoto] = useState<PhotoUpload | null>(null);
+  const [isDeletingPhoto, setIsDeletingPhoto] = useState(false);
   const [adminNoteInput, setAdminNoteInput] = useState('');
   const [isNotifDropdownOpen, setIsNotifDropdownOpen] = useState(false);
   const [isResettingData, setIsResettingData] = useState(false);
@@ -332,6 +337,67 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       console.error('Error updating photo verification status:', err);
       setActionFeedback({ type: 'error', message: 'Gagal memperbarui status verifikasi foto.' });
       setTimeout(() => setActionFeedback(null), 3000);
+    }
+  };
+
+  // Delete Incoming Photo (Admin Role)
+  const handleDeletePhotoSubmit = async (photo: PhotoUpload) => {
+    if (!photo) return;
+    setIsDeletingPhoto(true);
+    try {
+      // 1. Delete from Firestore
+      try {
+        const photoRef = doc(db, 'photos', photo.id);
+        await deleteDoc(photoRef);
+      } catch (fErr) {
+        console.warn('Firestore photo delete warning:', fErr);
+      }
+
+      // 2. Mark photo as deleted in local storage across all device caches
+      markPhotoAsDeleted(photo.id, photo.userId);
+
+      // 3. Callback to parent App state for immediate UI sync
+      if (onDeletePhoto) {
+        onDeletePhoto(photo.id);
+      }
+
+      // 4. Audit Trail Log
+      logActivity({
+        action: 'HAPUS_FOTO',
+        username: currentUser.username,
+        venue: photo.venue,
+        details: `Admin menghapus foto ${photo.category} dari ${photo.username} (${photo.venue})`
+      }).catch(() => {});
+
+      // 5. System Notification
+      sendSystemNotification({
+        type: 'crud',
+        title: 'Foto Masuk Dihapus',
+        message: `Foto ${photo.category} dari ${photo.venue} (${photo.username}) telah dihapus oleh Admin.`,
+        venue: photo.venue,
+        username: photo.username
+      }).catch(() => {});
+
+      // Close inspecting modal if open for this photo
+      if (inspectingPhoto?.id === photo.id) {
+        setInspectingPhoto(null);
+      }
+      setDeletingPhoto(null);
+
+      setActionFeedback({
+        type: 'success',
+        message: `Foto ${photo.category} (${photo.venue}) berhasil dihapus!`
+      });
+      setTimeout(() => setActionFeedback(null), 3500);
+    } catch (err) {
+      console.error('Error deleting photo:', err);
+      setActionFeedback({
+        type: 'error',
+        message: 'Gagal menghapus foto. Silakan coba kembali.'
+      });
+      setTimeout(() => setActionFeedback(null), 3500);
+    } finally {
+      setIsDeletingPhoto(false);
     }
   };
 
@@ -756,7 +822,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <div
                         key={photo.id}
                         onClick={() => setInspectingPhoto(photo)}
-                        className="bg-slate-800/80 rounded-xl p-2.5 border border-slate-700/70 hover:border-sky-500/50 cursor-pointer transition-all flex gap-3 items-center"
+                        className="bg-slate-800/80 rounded-xl p-2.5 border border-slate-700/70 hover:border-sky-500/50 cursor-pointer transition-all flex gap-3 items-center group/feed"
                       >
                         <div className="w-14 h-14 bg-black rounded-lg overflow-hidden shrink-0 border border-slate-700 relative">
                           <img src={photo.imageUrl} alt={photo.category} className="w-full h-full object-cover" />
@@ -781,6 +847,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <span className="truncate">{photo.latitude.toFixed(3)}°, {photo.longitude.toFixed(3)}°</span>
                           </div>
                         </div>
+                        {currentUser.role === 'admin' && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeletingPhoto(photo);
+                            }}
+                            className="p-1.5 bg-slate-900/60 hover:bg-rose-600 text-slate-400 hover:text-white rounded-lg border border-slate-700/60 transition-colors shrink-0 cursor-pointer"
+                            title="Hapus Foto"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     ))
                   )}
@@ -1104,6 +1183,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <Eye className="w-4 h-4" /> Periksa Rincian
                       </div>
 
+                      {/* Top-left Quick Delete button for Admin */}
+                      {currentUser.role === 'admin' && (
+                        <div className="absolute top-2 left-2 z-10">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeletingPhoto(photo);
+                            }}
+                            className="p-1.5 bg-slate-900/80 hover:bg-rose-600 text-rose-300 hover:text-white rounded-lg border border-rose-500/30 backdrop-blur-sm transition-all shadow-md cursor-pointer"
+                            title="Hapus Foto Ini"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+
                       {/* Status chip */}
                       <div className="absolute top-2 right-2">
                         <span
@@ -1158,21 +1254,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </div>
                       </div>
 
-                      {/* Quick Verify buttons */}
+                      {/* Quick Verify and Action buttons */}
                       <div className="flex items-center gap-1.5 pt-1">
                         <button
                           onClick={() => handleVerifyPhoto(photo.id, 'verified')}
-                          className="flex-1 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-300 font-bold rounded-lg border border-emerald-500/30 transition-colors flex items-center justify-center gap-1 text-[11px]"
+                          className="flex-1 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-300 font-bold rounded-lg border border-emerald-500/30 transition-colors flex items-center justify-center gap-1 text-[11px] cursor-pointer"
+                          title="Setujui dan Verifikasi"
                         >
                           <Check className="w-3.5 h-3.5" /> Setujui
                         </button>
                         <button
                           onClick={() => setInspectingPhoto(photo)}
-                          className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors"
+                          className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors cursor-pointer"
                           title="Buka Inspeksi Lengkap"
                         >
                           <Eye className="w-3.5 h-3.5" />
                         </button>
+                        {currentUser.role === 'admin' && (
+                          <button
+                            type="button"
+                            onClick={() => setDeletingPhoto(photo)}
+                            className="p-1.5 bg-rose-500/15 hover:bg-rose-600 text-rose-300 hover:text-white rounded-lg border border-rose-500/30 transition-colors cursor-pointer"
+                            title="Hapus Foto Masuk"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1690,19 +1797,103 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               {/* Action Buttons */}
               <div className="space-y-2 pt-2 border-t border-slate-800">
                 <button
+                  type="button"
                   onClick={() => handleVerifyPhoto(inspectingPhoto.id, 'verified')}
-                  className="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 shadow"
+                  className="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 shadow cursor-pointer"
                 >
                   <Check className="w-4 h-4" /> Setujui & Verifikasi Foto
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => handleVerifyPhoto(inspectingPhoto.id, 'rejected')}
-                  className="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 font-semibold rounded-xl flex items-center justify-center gap-1.5 transition-colors"
+                  className="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 font-semibold rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                 >
                   <X className="w-4 h-4" /> Tolak Foto
                 </button>
+
+                {currentUser.role === 'admin' && (
+                  <button
+                    type="button"
+                    onClick={() => setDeletingPhoto(inspectingPhoto)}
+                    className="w-full py-2 bg-rose-600/15 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-500/30 hover:border-rose-600 font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                  >
+                    <Trash2 className="w-4 h-4" /> Hapus Foto Masuk Ini
+                  </button>
+                )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRM DELETE PHOTO MODAL */}
+      {deletingPhoto && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl animate-scaleUp">
+            <div className="flex items-center gap-3 pb-3 border-b border-slate-800">
+              <div className="w-10 h-10 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-400 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-100">Hapus Foto Masuk?</h3>
+                <p className="text-[11px] text-slate-400">Konfirmasi penghapusan bukti foto dokumentasi</p>
+              </div>
+            </div>
+
+            {/* Photo Preview & Info Summary */}
+            <div className="bg-slate-950/70 rounded-2xl p-3 border border-slate-800/80 flex gap-3 items-center">
+              <div className="w-16 h-16 rounded-xl overflow-hidden bg-black shrink-0 border border-slate-800">
+                <img
+                  src={deletingPhoto.imageUrl}
+                  alt={deletingPhoto.category}
+                  className="w-full h-full object-cover"
+                />
+              </div>
+              <div className="flex-1 min-w-0 text-xs space-y-0.5">
+                <div className="font-bold text-slate-200 truncate">{deletingPhoto.venue}</div>
+                <div className="text-sky-400 font-semibold capitalize truncate">{deletingPhoto.category}</div>
+                <div className="text-[10px] text-slate-400 font-mono">
+                  {deletingPhoto.photoDate} • {deletingPhoto.photoTime}
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono truncate">
+                  Oleh: {deletingPhoto.username}
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-rose-500/10 border border-rose-500/25 p-3 rounded-2xl text-[11px] text-rose-200 flex items-start gap-2">
+              <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <p className="leading-relaxed">
+                Tindakan ini permanen. Foto akan dihapus dari basis data Firestore dan galeri monitoring pusat secara real-time.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                disabled={isDeletingPhoto}
+                onClick={() => setDeletingPhoto(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingPhoto}
+                onClick={() => handleDeletePhotoSubmit(deletingPhoto)}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer shadow flex items-center gap-1.5"
+              >
+                {isDeletingPhoto ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Menghapus...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" /> Ya, Hapus Foto
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>
