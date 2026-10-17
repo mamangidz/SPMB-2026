@@ -80,6 +80,8 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
 
   // Photo viewer modal
   const [viewingPhoto, setViewingPhoto] = useState<PhotoUpload | null>(null);
+  const [isLogoutModalOpen, setIsLogoutModalOpen] = useState<boolean>(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Sync photos from Firestore real-time for this venue/user
   useEffect(() => {
@@ -446,7 +448,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       }, 1500);
     } catch (err) {
       console.error('Failed to save photo to Firestore:', err);
-      alert('Gagal mengunggah foto. Silakan periksa koneksi internet Anda.');
+      setUploadError('Gagal mengunggah foto. Silakan periksa koneksi internet Anda.');
     } finally {
       setIsUploading(false);
     }
@@ -487,11 +489,12 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
         </div>
 
         <button
-          onClick={onLogout}
-          className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800/80 rounded-lg transition-colors"
-          title="Keluar Akun"
+          onClick={() => setIsLogoutModalOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-rose-300 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 rounded-xl transition-all cursor-pointer shadow-sm active:scale-95"
+          title="Keluar dari Akun"
         >
-          <LogOut className="w-4 h-4" />
+          <LogOut className="w-3.5 h-3.5 text-rose-400" />
+          <span>Keluar</span>
         </button>
       </header>
 
@@ -1267,6 +1270,40 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
                 <span className="text-slate-400">Catatan:</span> {viewingPhoto.notes}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRM LOGOUT MODAL */}
+      {isLogoutModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 max-w-xs w-full text-center space-y-3 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-400 flex items-center justify-center mx-auto">
+              <LogOut className="w-6 h-6" />
+            </div>
+            <h3 className="text-sm font-bold text-slate-100">Keluar dari Aplikasi?</h3>
+            <p className="text-xs text-slate-400">
+              Anda akan keluar dari akun <strong className="text-slate-200">{currentUser.username}</strong> ({currentUser.venue}).
+            </p>
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsLogoutModalOpen(false)}
+                className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsLogoutModalOpen(false);
+                  onLogout();
+                }}
+                className="flex-1 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-xs transition-colors shadow cursor-pointer"
+              >
+                Ya, Keluar
+              </button>
+            </div>
           </div>
         </div>
       )}

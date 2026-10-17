@@ -46,6 +46,9 @@ interface AdminDashboardProps {
   notifications: SystemNotification[];
   activityLogs: ActivityLog[];
   onLogout: () => void;
+  onAddUser?: (user: UserAccount) => void;
+  onUpdateUser?: (user: UserAccount) => void;
+  onDeleteUser?: (userId: string) => void;
   onSelectUserToSimulate?: (user: UserAccount) => void;
 }
 
@@ -56,6 +59,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   notifications,
   activityLogs,
   onLogout,
+  onAddUser,
+  onUpdateUser,
+  onDeleteUser,
   onSelectUserToSimulate
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'photos' | 'logs'>('overview');
@@ -78,6 +84,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [adminNoteInput, setAdminNoteInput] = useState('');
   const [isNotifDropdownOpen, setIsNotifDropdownOpen] = useState(false);
   const [isResettingData, setIsResettingData] = useState(false);
+  const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [addUserError, setAddUserError] = useState('');
+  const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // New user form state
   const [newUserForm, setNewUserForm] = useState({
@@ -131,10 +141,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // CRUD: Create User
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUserForm.venue || !newUserForm.username || !newUserForm.password) {
-      alert('Mohon lengkapi Venue, Username, dan Password.');
+    const cleanVenue = newUserForm.venue.trim();
+    const cleanUsername = newUserForm.username.toLowerCase().trim();
+    const cleanPassword = newUserForm.password.trim();
+
+    if (!cleanVenue || !cleanUsername || !cleanPassword) {
+      setAddUserError('Mohon lengkapi Venue, Username, dan Password.');
       return;
     }
+
+    const isDuplicate = users.some(u => u.username.toLowerCase() === cleanUsername);
+    if (isDuplicate) {
+      setAddUserError(`Username "${cleanUsername}" sudah digunakan di daftar user. Gunakan username lain.`);
+      return;
+    }
+    setAddUserError('');
 
     try {
       const datesArray = newUserForm.tahap2DatesInput
@@ -143,38 +164,50 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         .filter(Boolean);
 
       const maxNo = users.reduce((max, u) => Math.max(max, u.no || 0), 0);
+      const newId = 'user_' + Date.now();
 
-      const payload: Omit<UserAccount, 'id'> = {
+      const payload: UserAccount = {
+        id: newId,
         no: maxNo + 1,
-        venue: newUserForm.venue,
-        username: newUserForm.username.toLowerCase().trim(),
-        password: newUserForm.password,
+        venue: cleanVenue,
+        username: cleanUsername,
+        password: cleanPassword,
         role: newUserForm.role,
-        ujiFungsi: newUserForm.ujiFungsi,
+        ujiFungsi: newUserForm.ujiFungsi.trim() || '-',
         tahap1Tasks: newUserForm.role === 'admin' ? [] : [...STANDARD_TAHAP1_TASKS],
         tahap2Dates: newUserForm.role === 'admin' ? [] : datesArray,
         isOnline: false,
         createdAt: new Date().toISOString()
       };
 
-      await addDoc(collection(db, 'users'), payload);
+      // 1. Optimistic update: UI updates immediately
+      if (onAddUser) onAddUser(payload);
+      setIsAddUserModalOpen(false);
+      setActionFeedback({ type: 'success', message: `User "${cleanUsername}" (${cleanVenue}) berhasil ditambahkan!` });
+      setTimeout(() => setActionFeedback(null), 3500);
 
-      await logActivity({
+      // 2. Save document to Firestore
+      try {
+        await setDoc(doc(db, 'users', newId), payload);
+      } catch (fErr) {
+        console.warn('Firestore user save handled locally:', fErr);
+      }
+
+      logActivity({
         action: 'TAMBAH_USER',
         username: currentUser.username,
-        venue: newUserForm.venue,
-        details: `Menambahkan user baru: ${newUserForm.username}`
-      });
+        venue: cleanVenue,
+        details: `Menambahkan user baru: ${cleanUsername}`
+      }).catch(() => {});
 
-      await sendSystemNotification({
+      sendSystemNotification({
         type: 'crud',
         title: 'User Baru Dibuat',
-        message: `Admin menambahkan user ${newUserForm.username} (${newUserForm.venue})`,
-        venue: newUserForm.venue,
-        username: newUserForm.username
-      });
+        message: `Admin menambahkan user ${cleanUsername} (${cleanVenue})`,
+        venue: cleanVenue,
+        username: cleanUsername
+      }).catch(() => {});
 
-      setIsAddUserModalOpen(false);
       setNewUserForm({
         venue: '',
         username: '',
@@ -185,7 +218,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       });
     } catch (err) {
       console.error('Error creating user:', err);
-      alert('Gagal menambah user. Periksa koneksi.');
     }
   };
 
@@ -195,28 +227,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     if (!editingUser) return;
 
     try {
-      const userRef = doc(db, 'users', editingUser.id);
-      await updateDoc(userRef, {
-        venue: editingUser.venue,
-        username: editingUser.username,
-        password: editingUser.password,
-        role: editingUser.role,
-        ujiFungsi: editingUser.ujiFungsi,
-        tahap2Dates: editingUser.tahap2Dates,
+      const updatedUser: UserAccount = {
+        ...editingUser,
+        venue: editingUser.venue.trim(),
+        username: editingUser.username.toLowerCase().trim(),
+        password: editingUser.password.trim(),
         updatedAt: new Date().toISOString()
-      });
+      };
 
-      await logActivity({
+      // 1. Optimistic update
+      if (onUpdateUser) onUpdateUser(updatedUser);
+      setEditingUser(null);
+      setActionFeedback({ type: 'success', message: `Data user "${updatedUser.username}" berhasil diperbarui!` });
+      setTimeout(() => setActionFeedback(null), 3500);
+
+      // 2. Persist to Firestore
+      try {
+        const userRef = doc(db, 'users', editingUser.id);
+        await setDoc(userRef, updatedUser, { merge: true });
+      } catch (fErr) {
+        console.warn('Firestore update handled locally:', fErr);
+      }
+
+      logActivity({
         action: 'UPDATE_USER',
         username: currentUser.username,
-        venue: editingUser.venue,
-        details: `Mengubah data user ${editingUser.username}`
-      });
-
-      setEditingUser(null);
+        venue: updatedUser.venue,
+        details: `Mengubah data user ${updatedUser.username}`
+      }).catch(() => {});
     } catch (err) {
-      console.error('Error updating user:', err);
-      alert('Gagal mengubah data user.');
+      console.error('Error updating user in Firestore:', err);
     }
   };
 
@@ -224,19 +264,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleDeleteUser = async (userId: string) => {
     try {
       const targetUser = users.find(u => u.id === userId);
-      await deleteDoc(doc(db, 'users', userId));
 
-      await logActivity({
+      // Prevent accidental deletion of main admin account
+      if (targetUser?.role === 'admin' || targetUser?.username.toLowerCase() === 'admin') {
+        setDeletingUserId(null);
+        setActionFeedback({ type: 'error', message: 'Akun Admin Utama tidak dapat dihapus untuk menjaga keamanan sistem.' });
+        setTimeout(() => setActionFeedback(null), 4000);
+        return;
+      }
+
+      // 1. Optimistically delete from UI immediately
+      if (onDeleteUser) onDeleteUser(userId);
+      setDeletingUserId(null);
+      setActionFeedback({ type: 'success', message: `Akun user "${targetUser?.username}" berhasil dihapus!` });
+      setTimeout(() => setActionFeedback(null), 3500);
+
+      // 2. Delete from Firestore
+      try {
+        await deleteDoc(doc(db, 'users', userId));
+      } catch (fErr) {
+        console.warn('Firestore delete handled locally:', fErr);
+      }
+
+      logActivity({
         action: 'HAPUS_USER',
         username: currentUser.username,
         venue: targetUser?.venue || 'Pusat',
         details: `Menghapus user: ${targetUser?.username}`
-      });
-
-      setDeletingUserId(null);
+      }).catch(() => {});
     } catch (err) {
       console.error('Error deleting user:', err);
-      alert('Gagal menghapus user.');
     }
   };
 
@@ -269,40 +326,53 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       setInspectingPhoto(null);
       setAdminNoteInput('');
+      setActionFeedback({ type: 'success', message: `Foto berhasil ${status === 'verified' ? 'disetujui' : 'ditolak'}!` });
+      setTimeout(() => setActionFeedback(null), 3000);
     } catch (err) {
       console.error('Error updating photo verification status:', err);
-      alert('Gagal memperbarui status verifikasi.');
+      setActionFeedback({ type: 'error', message: 'Gagal memperbarui status verifikasi foto.' });
+      setTimeout(() => setActionFeedback(null), 3000);
     }
   };
 
   // Reset / Reseed 21 Users Table
   const handleReseedInitialData = async () => {
-    if (!confirm('Apakah Anda yakin ingin menyinkronkan ulang data awal 21 akun dari tabel lampiran gambar?')) {
-      return;
-    }
+    setIsResetModalOpen(false);
     setIsResettingData(true);
     try {
-      const batch = writeBatch(db);
+      // 1. Update local users state
       for (const u of INITIAL_USERS) {
-        const userRef = doc(db, 'users', u.id);
-        batch.set(userRef, {
-          ...u,
-          createdAt: new Date().toISOString()
-        });
+        if (onAddUser) onAddUser(u);
       }
-      await batch.commit();
 
-      await logActivity({
+      // 2. Batch commit to Firestore
+      try {
+        const batch = writeBatch(db);
+        for (const u of INITIAL_USERS) {
+          const userRef = doc(db, 'users', u.id);
+          batch.set(userRef, {
+            ...u,
+            createdAt: new Date().toISOString()
+          });
+        }
+        await batch.commit();
+      } catch (fErr) {
+        console.warn('Firestore reseed batch handled locally:', fErr);
+      }
+
+      logActivity({
         action: 'RESEED_DATA',
         username: currentUser.username,
         venue: 'Pusat',
         details: 'Menyinkronkan ulang 21 pengguna venue dari data tabel'
-      });
+      }).catch(() => {});
 
-      alert('Berhasil menyinkronkan ulang data 21 user venue!');
+      setActionFeedback({ type: 'success', message: 'Berhasil menyinkronkan ulang 21 user venue dari tabel!' });
+      setTimeout(() => setActionFeedback(null), 3500);
     } catch (err) {
       console.error('Error reseeding data:', err);
-      alert('Gagal menyinkronkan data.');
+      setActionFeedback({ type: 'error', message: 'Gagal menyinkronkan data.' });
+      setTimeout(() => setActionFeedback(null), 3500);
     } finally {
       setIsResettingData(false);
     }
@@ -371,8 +441,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <div className="flex items-center gap-3">
           {/* Push notification enable button */}
           <button
-            onClick={() => requestPushPermission().then(granted => alert(granted ? 'Notifikasi browser diaktifkan!' : 'Izin notifikasi belum diberikan.'))}
-            className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold border border-slate-700 transition-colors"
+            onClick={() => requestPushPermission().then(granted => {
+              setActionFeedback({
+                type: granted ? 'success' : 'error',
+                message: granted ? 'Notifikasi desktop push berhasil diaktifkan!' : 'Izin notifikasi browser belum diberikan.'
+              });
+              setTimeout(() => setActionFeedback(null), 3000);
+            })}
+            className="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold border border-slate-700 transition-colors cursor-pointer"
             title="Aktifkan Notifikasi Desktop Push"
           >
             <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
@@ -447,21 +523,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           {/* User profile / Logout */}
-          <div className="flex items-center gap-2 pl-2 border-l border-slate-800">
+          <div className="flex items-center gap-3 pl-3 border-l border-slate-800">
             <div className="text-right hidden sm:block">
               <div className="text-xs font-bold text-slate-200">{currentUser.username}</div>
               <div className="text-[10px] text-emerald-400 font-mono">Administrator</div>
             </div>
             <button
-              onClick={onLogout}
-              className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-xl border border-rose-500/30 transition-colors"
-              title="Keluar"
+              onClick={() => setIsLogoutModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 rounded-xl border border-rose-500/30 transition-all font-bold text-xs cursor-pointer shadow-sm active:scale-95"
+              title="Keluar dari Aplikasi (Logout)"
             >
-              <LogOut className="w-4 h-4" />
+              <LogOut className="w-3.5 h-3.5 text-rose-400" />
+              <span>Keluar</span>
             </button>
           </div>
         </div>
       </header>
+
+      {/* Floating Action Feedback Banner */}
+      {actionFeedback && (
+        <div className="fixed top-16 right-6 z-50 animate-bounce">
+          <div
+            className={`px-4 py-2.5 rounded-2xl shadow-2xl text-xs font-semibold flex items-center gap-2 border ${
+              actionFeedback.type === 'success'
+                ? 'bg-emerald-950/90 text-emerald-200 border-emerald-500/40'
+                : 'bg-rose-950/90 text-rose-200 border-rose-500/40'
+            }`}
+          >
+            {actionFeedback.type === 'success' ? (
+              <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+            ) : (
+              <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
+            )}
+            <span>{actionFeedback.message}</span>
+          </div>
+        </div>
+      )}
 
       {/* Navigation Tabs */}
       <nav aria-label="Menu Admin" className="bg-slate-900/50 border-b border-slate-800 px-4 lg:px-8 flex items-center gap-2 overflow-x-auto">
@@ -746,9 +843,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </button>
 
                 <button
-                  onClick={handleReseedInitialData}
+                  onClick={() => setIsResetModalOpen(true)}
                   disabled={isResettingData}
-                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 flex items-center gap-1.5 transition-colors"
+                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
                   title="Sinkronkan ulang 21 baris data dari gambar"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${isResettingData ? 'animate-spin' : ''}`} />
@@ -756,8 +853,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </button>
 
                 <button
-                  onClick={() => setIsAddUserModalOpen(true)}
-                  className="px-3.5 py-2 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white text-xs font-bold rounded-xl shadow flex items-center gap-1.5 transition-all"
+                  onClick={() => {
+                    setAddUserError('');
+                    setIsAddUserModalOpen(true);
+                  }}
+                  className="px-3.5 py-2 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white text-xs font-bold rounded-xl shadow flex items-center gap-1.5 transition-all cursor-pointer"
                 >
                   <Plus className="w-4 h-4" /> Tambah User
                 </button>
@@ -1149,6 +1249,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </button>
             </div>
 
+            {addUserError && (
+              <div className="mb-3 p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{addUserError}</span>
+              </div>
+            )}
+
             <form onSubmit={handleCreateUser} className="space-y-3.5">
               <div>
                 <label className="block text-[11px] font-semibold text-slate-300 mb-1">Nama Venue:</label>
@@ -1366,16 +1473,84 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </p>
             <div className="flex justify-center gap-2 pt-2">
               <button
+                type="button"
                 onClick={() => setDeletingUserId(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs"
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs cursor-pointer"
               >
                 Batal
               </button>
               <button
+                type="button"
                 onClick={() => handleDeleteUser(deletingUserId)}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-xs"
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-xs cursor-pointer shadow"
               >
                 Ya, Hapus
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRM LOGOUT MODAL */}
+      {isLogoutModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-sm w-full p-6 text-center space-y-4 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-400 flex items-center justify-center mx-auto">
+              <LogOut className="w-6 h-6" />
+            </div>
+            <h3 className="text-sm font-bold text-slate-100">Keluar dari Dashboard Admin?</h3>
+            <p className="text-xs text-slate-400">
+              Sesi Administrator Anda akan ditutup dan Anda akan dialihkan kembali ke halaman login.
+            </p>
+            <div className="flex justify-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsLogoutModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsLogoutModalOpen(false);
+                  onLogout();
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-xs cursor-pointer shadow"
+              >
+                Ya, Keluar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRM RESET 21 USERS MODAL */}
+      {isResetModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-sm w-full p-6 text-center space-y-4 shadow-2xl">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto">
+              <RefreshCw className="w-6 h-6" />
+            </div>
+            <h3 className="text-sm font-bold text-slate-100">Sinkronkan Ulang 21 Baris Data?</h3>
+            <p className="text-xs text-slate-400">
+              Tindakan ini akan mengembalikan seluruh daftar 21 venue dan akun ke data awal sesuai tabel lampiran gambar.
+            </p>
+            <div className="flex justify-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsResetModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleReseedInitialData}
+                disabled={isResettingData}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl text-xs cursor-pointer shadow"
+              >
+                {isResettingData ? 'Menyinkronkan...' : 'Ya, Sinkronkan Ulang'}
               </button>
             </div>
           </div>

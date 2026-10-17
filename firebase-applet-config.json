@@ -1,11 +1,12 @@
 {
-  "projectId": "gen-lang-client-0104156381",
-  "appId": "1:68368667280:web:56a6b953826e573eee3e15",
-  "apiKey": "AIzaSyCjq79Y--vmZeyGDBDmUfMauuDdIMif4vI",
-  "authDomain": "gen-lang-client-0104156381.firebaseapp.com",
-  "storageBucket": "gen-lang-client-0104156381.firebasestorage.app",
-  "messagingSenderId": "68368667280",
+  "projectId": "thinking-affinity-tt8c4",
+  "appId": "1:400142807946:web:fa515fbe76bc8a0b574e73",
+  "apiKey": "AIzaSyBETT-605kU0oHaLq5MGGfWOZA1sXHQ720",
+  "authDomain": "thinking-affinity-tt8c4.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-376632bb-73d6-4b67-b121-354c041f87e8",
+  "storageBucket": "thinking-affinity-tt8c4.firebasestorage.app",
+  "messagingSenderId": "400142807946",
   "measurementId": "",
-  "oAuthClientId": "68368667280-mqd7bkk6jk2ascgaqh78358rf466nct7.apps.googleusercontent.com",
+  "oAuthClientId": "400142807946-udrrka2j4fkhf1nod67phgbq7t5rapl0.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

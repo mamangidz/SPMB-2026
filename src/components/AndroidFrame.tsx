@@ -1,13 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { Smartphone, Maximize2, Minimize2, Wifi, BatteryCharging, Signal } from 'lucide-react';
+import { Smartphone, Maximize2, Minimize2, Wifi, BatteryCharging, Signal, LogOut } from 'lucide-react';
 
 interface AndroidFrameProps {
   children: React.ReactNode;
   activeVenue?: string;
   username?: string;
+  onLogout?: () => void;
 }
 
-export const AndroidFrame: React.FC<AndroidFrameProps> = ({ children, activeVenue, username }) => {
+export const AndroidFrame: React.FC<AndroidFrameProps> = ({
+  children,
+  activeVenue,
+  username,
+  onLogout
+}) => {
   const [isPhoneMockup, setIsPhoneMockup] = useState(true);
   const [currentTime, setCurrentTime] = useState('');
 
@@ -24,35 +30,46 @@ export const AndroidFrame: React.FC<AndroidFrameProps> = ({ children, activeVenu
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-0 sm:p-4 text-slate-100">
       {/* Top Device Mode Toolbar (for PC / review convenience) */}
-      <header className="w-full max-w-4xl hidden sm:flex items-center justify-between px-4 py-2 mb-3 bg-slate-900/80 backdrop-blur rounded-xl border border-slate-800 text-xs text-slate-400">
+      <header className="w-full max-w-4xl flex items-center justify-between px-4 py-2 mb-3 bg-slate-900/90 backdrop-blur rounded-2xl border border-slate-800 text-xs text-slate-400">
         <div className="flex items-center gap-2">
-          <Smartphone className="w-4 h-4 text-emerald-400" />
-          <span className="font-semibold text-slate-200">Aplikasi Android — Role User</span>
+          <Smartphone className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span className="font-semibold text-slate-200 hidden sm:inline">Aplikasi Android SPMB STAN</span>
           {activeVenue && (
-            <span className="bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20">
+            <span className="bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20 font-medium">
               {activeVenue} ({username})
             </span>
           )}
         </div>
+
         <div className="flex items-center gap-2">
-          <span className="text-slate-400">Tampilan:</span>
           <button
             onClick={() => setIsPhoneMockup(!isPhoneMockup)}
-            className="flex items-center gap-1.5 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors border border-slate-700 font-medium"
+            className="flex items-center gap-1.5 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors border border-slate-700 font-medium cursor-pointer"
             title="Ganti Mode Frame Smartphone / Layar Penuh"
           >
             {isPhoneMockup ? (
               <>
                 <Maximize2 className="w-3.5 h-3.5 text-sky-400" />
-                Mode Layar Penuh
+                <span className="hidden sm:inline">Layar Penuh</span>
               </>
             ) : (
               <>
                 <Minimize2 className="w-3.5 h-3.5 text-sky-400" />
-                Mode Mockup HP Android
+                <span className="hidden sm:inline">Mockup HP</span>
               </>
             )}
           </button>
+
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              className="flex items-center gap-1 px-3 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 rounded-lg transition-colors border border-rose-500/30 font-semibold cursor-pointer"
+              title="Keluar dari Aplikasi (Logout)"
+            >
+              <LogOut className="w-3.5 h-3.5 text-rose-400" />
+              <span>Keluar</span>
+            </button>
+          )}
         </div>
       </header>
 
