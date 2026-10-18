@@ -48,6 +48,7 @@ export interface PhotoUpload {
   driveStatus?: 'synced' | 'local_only' | 'failed';
   notes?: string;
   adminComment?: string;
+  verifiedAt?: string;
   createdAt: string;
 }
 

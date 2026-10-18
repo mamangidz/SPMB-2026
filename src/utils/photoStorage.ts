@@ -67,3 +67,44 @@ export function markPhotoAsDeleted(photoId: string, userId?: string): void {
     console.warn('Failed to purge photo from localStorage:', err);
   }
 }
+
+/**
+ * Update a photo's verification status across local storage caches
+ */
+export function updateCachedPhotoStatus(
+  photoId: string,
+  status: 'verified' | 'rejected',
+  additionalFields: Partial<PhotoUpload> = {}
+): void {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('spmb_local_photos_')) {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          try {
+            const list: PhotoUpload[] = JSON.parse(raw);
+            let modified = false;
+            const updated = list.map((p) => {
+              if (p.id === photoId) {
+                modified = true;
+                return {
+                  ...p,
+                  status,
+                  ...additionalFields
+                };
+              }
+              return p;
+            });
+            if (modified) {
+              localStorage.setItem(key, JSON.stringify(updated));
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to update photo status in localStorage:', err);
+  }
+}
+

@@ -367,6 +367,12 @@ export default function App() {
     setPhotos((prev) => prev.filter((p) => p.id !== photoId));
   };
 
+  const handleUpdatePhotoLocal = (photoId: string, updatedFields: Partial<PhotoUpload>) => {
+    setPhotos((prev) =>
+      prev.map((p) => (p.id === photoId ? { ...p, ...updatedFields } : p))
+    );
+  };
+
   // Handle User Logout - 100% Reliable and Instant
   const handleLogout = () => {
     const userToLogOut = currentUser;
@@ -432,6 +438,7 @@ export default function App() {
           onUpdateUser={handleUpdateUserLocal}
           onDeleteUser={handleDeleteUserLocal}
           onDeletePhoto={handleDeletePhotoLocal}
+          onUpdatePhoto={handleUpdatePhotoLocal}
           onSelectUserToSimulate={(targetUser) => setSimulatedUser(targetUser)}
         />
       ) : (

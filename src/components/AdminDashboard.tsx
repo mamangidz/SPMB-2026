@@ -38,7 +38,7 @@ import { db } from '../firebase';
 import { UserAccount, PhotoUpload, SystemNotification, ActivityLog } from '../types';
 import { INITIAL_USERS, STANDARD_TAHAP1_TASKS } from '../data/initialData';
 import { sendSystemNotification, logActivity, requestPushPermission } from '../utils/notifications';
-import { markPhotoAsDeleted } from '../utils/photoStorage';
+import { markPhotoAsDeleted, updateCachedPhotoStatus } from '../utils/photoStorage';
 
 interface AdminDashboardProps {
   currentUser: UserAccount;
@@ -51,6 +51,7 @@ interface AdminDashboardProps {
   onUpdateUser?: (user: UserAccount) => void;
   onDeleteUser?: (userId: string) => void;
   onDeletePhoto?: (photoId: string) => void;
+  onUpdatePhoto?: (photoId: string, updatedFields: Partial<PhotoUpload>) => void;
   onSelectUserToSimulate?: (user: UserAccount) => void;
 }
 
@@ -65,6 +66,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onUpdateUser,
   onDeleteUser,
   onDeletePhoto,
+  onUpdatePhoto,
   onSelectUserToSimulate
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'photos' | 'logs'>('overview');
@@ -305,33 +307,58 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Photo Verification (Approve / Reject)
   const handleVerifyPhoto = async (photoId: string, status: 'verified' | 'rejected') => {
     try {
-      const photoRef = doc(db, 'photos', photoId);
-      await updateDoc(photoRef, {
+      const photo = photos.find(p => p.id === photoId);
+      const updateData: Partial<PhotoUpload> = {
         status,
         adminComment: adminNoteInput.trim() || (status === 'verified' ? 'Foto telah diverifikasi dan sah.' : 'Foto ditolak, harap unggah ulang.'),
         verifiedAt: new Date().toISOString()
-      });
+      };
 
-      const photo = photos.find(p => p.id === photoId);
+      // 1. Instantly update local state in parent App for 0ms UI response
+      if (onUpdatePhoto) {
+        onUpdatePhoto(photoId, updateData);
+      }
 
-      await logActivity({
+      // 2. Persist update into all local storage caches
+      updateCachedPhotoStatus(photoId, status, updateData);
+
+      // 3. Write to Firestore: Use setDoc with merge: true so it works even if doc was created offline
+      try {
+        const photoRef = doc(db, 'photos', photoId);
+        if (photo) {
+          await setDoc(photoRef, { ...photo, ...updateData }, { merge: true });
+        } else {
+          await setDoc(photoRef, updateData, { merge: true });
+        }
+      } catch (fErr) {
+        console.warn('Firestore photo verify warning (local state preserved):', fErr);
+      }
+
+      // 4. Non-fatal audit logging
+      logActivity({
         action: status === 'verified' ? 'VERIFIKASI_FOTO' : 'TOLAK_FOTO',
         username: currentUser.username,
         venue: photo?.venue || '',
-        details: `${status === 'verified' ? 'Menyetujui' : 'Menolak'} foto ${photo?.category} milik ${photo?.username}`
-      });
+        details: `${status === 'verified' ? 'Menyetujui' : 'Menolak'} foto ${photo?.category || ''} milik ${photo?.username || ''} (${photo?.venue || ''})`
+      }).catch(() => {});
 
-      await sendSystemNotification({
+      // 5. Non-fatal system notification
+      sendSystemNotification({
         type: 'verify',
         title: status === 'verified' ? 'Foto Disetujui' : 'Foto Ditolak',
-        message: `Foto ${photo?.category} di ${photo?.venue} telah ${status === 'verified' ? 'diverifikasi' : 'ditolak'} oleh Admin.`,
+        message: `Foto ${photo?.category || ''} di ${photo?.venue || ''} telah ${status === 'verified' ? 'diverifikasi dan disahkan' : 'ditolak'} oleh Admin.`,
         venue: photo?.venue,
         username: photo?.username
-      });
+      }).catch(() => {});
 
-      setInspectingPhoto(null);
+      if (inspectingPhoto?.id === photoId) {
+        setInspectingPhoto(null);
+      }
       setAdminNoteInput('');
-      setActionFeedback({ type: 'success', message: `Foto berhasil ${status === 'verified' ? 'disetujui' : 'ditolak'}!` });
+      setActionFeedback({
+        type: 'success',
+        message: `Foto ${photo?.category || ''} (${photo?.venue || ''}) berhasil ${status === 'verified' ? 'disetujui' : 'ditolak'}!`
+      });
       setTimeout(() => setActionFeedback(null), 3000);
     } catch (err) {
       console.error('Error updating photo verification status:', err);
@@ -848,17 +875,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </div>
                         </div>
                         {currentUser.role === 'admin' && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDeletingPhoto(photo);
-                            }}
-                            className="p-1.5 bg-slate-900/60 hover:bg-rose-600 text-slate-400 hover:text-white rounded-lg border border-slate-700/60 transition-colors shrink-0 cursor-pointer"
-                            title="Hapus Foto"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {photo.status !== 'verified' ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleVerifyPhoto(photo.id, 'verified');
+                                }}
+                                className="px-2 py-1 bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-300 font-bold rounded-lg border border-emerald-500/40 transition-all flex items-center gap-1 text-[10px] cursor-pointer active:scale-95 shadow-sm"
+                                title="Setujui dan Sahkan Foto"
+                              >
+                                <Check className="w-3 h-3" /> Setujui
+                              </button>
+                            ) : (
+                              <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20 flex items-center gap-0.5">
+                                <Check className="w-3 h-3" /> Sah
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeletingPhoto(photo);
+                              }}
+                              className="p-1.5 bg-slate-900/60 hover:bg-rose-600 text-slate-400 hover:text-white rounded-lg border border-slate-700/60 transition-colors cursor-pointer"
+                              title="Hapus Foto"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         )}
                       </div>
                     ))
@@ -1256,14 +1302,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                       {/* Quick Verify and Action buttons */}
                       <div className="flex items-center gap-1.5 pt-1">
+                        {photo.status === 'verified' ? (
+                          <div className="flex-1 py-1.5 bg-emerald-500/20 text-emerald-300 font-bold rounded-lg border border-emerald-500/30 flex items-center justify-center gap-1 text-[11px]">
+                            <Check className="w-3.5 h-3.5 text-emerald-400" /> Terverifikasi Sah
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleVerifyPhoto(photo.id, 'verified')}
+                            className="flex-1 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-300 font-bold rounded-lg border border-emerald-500/40 transition-colors flex items-center justify-center gap-1 text-[11px] cursor-pointer active:scale-95 shadow-sm"
+                            title="Setujui dan Verifikasi"
+                          >
+                            <Check className="w-3.5 h-3.5" /> Setujui
+                          </button>
+                        )}
                         <button
-                          onClick={() => handleVerifyPhoto(photo.id, 'verified')}
-                          className="flex-1 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-300 font-bold rounded-lg border border-emerald-500/30 transition-colors flex items-center justify-center gap-1 text-[11px] cursor-pointer"
-                          title="Setujui dan Verifikasi"
-                        >
-                          <Check className="w-3.5 h-3.5" /> Setujui
-                        </button>
-                        <button
+                          type="button"
                           onClick={() => setInspectingPhoto(photo)}
                           className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors cursor-pointer"
                           title="Buka Inspeksi Lengkap"
