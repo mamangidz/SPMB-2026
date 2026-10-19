@@ -21,7 +21,13 @@ import { UserMobileApp } from './components/UserMobileApp';
 import { ToastNotification } from './components/ToastNotification';
 import { sendSystemNotification, logActivity, requestPushPermission } from './utils/notifications';
 import { playLoginAlertSound, playNotificationSound } from './utils/audio';
-import { isPhotoDeleted, markPhotoAsDeleted, syncLocalPhotosToFirestore } from './utils/photoStorage';
+import {
+  isPhotoDeleted,
+  markPhotoAsDeleted,
+  getInMemoryPhotos,
+  initStorageEngine,
+  subscribeCrossTabSync
+} from './utils/photoStorage';
 
 const STORAGE_USERS_KEY = 'spmb_stan_users_cache_v2';
 const STORAGE_SESSION_KEY = 'spmb_stan_active_session_v2';
@@ -94,14 +100,14 @@ export default function App() {
   const [activeToast, setActiveToast] = useState<SystemNotification | null>(null);
   const initialMountRef = useRef(true);
 
-  // 1. Validate connection and auto-seed users / auto-sync local photos if needed
+  // 1. Validate connection and initialize resilient offline storage engine
   useEffect(() => {
     testConnection();
-    syncLocalPhotosToFirestore(db).then((count) => {
-      if (count > 0) {
-        console.log(`Auto-synced ${count} local photos to Firestore.`);
+    initStorageEngine().then((loadedPhotos) => {
+      if (loadedPhotos && loadedPhotos.length > 0) {
+        setPhotos(loadedPhotos);
       }
-    }).catch(console.warn);
+    });
   }, []);
 
   // 2. Real-time Users Listener with automatic seeding and resilient cache
@@ -176,53 +182,80 @@ export default function App() {
     return localList;
   };
 
-  // 3. Real-time Photos Listener with Local Cache Fallback
+  // 3. Real-time Photos Listener with Resilient Store & Cross-Tab Broadcast
   useEffect(() => {
-    // Initial sync from local storage
-    const initialLocal = getAllCachedPhotos();
-    if (initialLocal.length > 0) {
-      setPhotos((prev) => {
-        const map = new Map<string, PhotoUpload>();
-        initialLocal.forEach((p) => map.set(p.id, p));
-        prev.forEach((p) => {
-          if (!isPhotoDeleted(p.id)) map.set(p.id, p);
-        });
-        return Array.from(map.values()).sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-      });
+    // Cross-tab real-time sync for photos (status update, deletion, new upload)
+    const unsubCrossTab = subscribeCrossTabSync((event) => {
+      if (event?.type === 'PHOTO_ADDED' || event?.type === 'PHOTO_STATUS_UPDATED' || event?.type === 'PHOTO_DELETED') {
+        setPhotos(getInMemoryPhotos());
+      }
+    });
+
+    // Initial sync from persistent in-memory/IDB store
+    const initialPhotos = getInMemoryPhotos();
+    if (initialPhotos.length > 0) {
+      setPhotos(initialPhotos);
     }
 
+    let unsubscribeFirestore: (() => void) | undefined;
     try {
       const photosCol = collection(db, 'photos');
-      const unsubscribe = onSnapshot(
+      unsubscribeFirestore = onSnapshot(
         photosCol,
         (snapshot) => {
           const map = new Map<string, PhotoUpload>();
-          // Include any local pending photos
-          getAllCachedPhotos().forEach((p) => map.set(p.id, p));
-          snapshot.forEach((d) => {
-            if (!isPhotoDeleted(d.id)) {
-              map.set(d.id, { id: d.id, ...d.data() } as PhotoUpload);
+
+          // 1. First include all local photos from IndexedDB & memory
+          getInMemoryPhotos().forEach((p) => {
+            if (p && p.id && !isPhotoDeleted(p.id)) {
+              map.set(p.id, p);
             }
           });
-          const list = Array.from(map.values()).sort(
-            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          );
+
+          // 2. Also check any legacy cached photos
+          getAllCachedPhotos().forEach((p) => {
+            if (p && p.id && !isPhotoDeleted(p.id)) {
+              if (!map.has(p.id)) map.set(p.id, p);
+            }
+          });
+
+          // 3. Merge remote Firestore documents (without overwriting imageUrl if already loaded)
+          snapshot.forEach((d) => {
+            if (!isPhotoDeleted(d.id)) {
+              const remoteData = d.data() as Partial<PhotoUpload>;
+              const existing = map.get(d.id);
+              map.set(d.id, {
+                ...(existing || {}),
+                id: d.id,
+                ...remoteData,
+                // preserve valid image URL from local if remote payload was truncated
+                imageUrl: remoteData.imageUrl || existing?.imageUrl || ''
+              } as PhotoUpload);
+            }
+          });
+
+          const list = Array.from(map.values())
+            .filter((p) => !isPhotoDeleted(p.id))
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
           setPhotos(list);
         },
         (error) => {
-          console.warn('Photos listener warning (using cached photos):', error);
-          const cached = getAllCachedPhotos();
-          if (cached.length > 0) {
-            setPhotos(cached);
+          console.warn('Photos Firestore listener warning (using persistent storage):', error);
+          const currentLocal = getInMemoryPhotos();
+          if (currentLocal.length > 0) {
+            setPhotos(currentLocal);
           }
         }
       );
-      return () => unsubscribe();
     } catch (err) {
       console.warn('Firestore photos subscribe failure:', err);
     }
+
+    return () => {
+      unsubCrossTab();
+      if (unsubscribeFirestore) unsubscribeFirestore();
+    };
   }, []);
 
   // 4. Real-time Notifications Listener (Audio + Toast trigger)

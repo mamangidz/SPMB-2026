@@ -31,7 +31,15 @@ import {
   uploadPhotoToGoogleDrive,
   generateDriveFileName
 } from '../utils/googleDrive';
-import { getDeletedPhotoIds, isPhotoDeleted, sanitizeFirestorePhoto } from '../utils/photoStorage';
+import {
+  getDeletedPhotoIds,
+  isPhotoDeleted,
+  sanitizeFirestorePhoto,
+  savePhotoLocally,
+  getInMemoryPhotos,
+  safeFirestoreWrite,
+  subscribeCrossTabSync
+} from '../utils/photoStorage';
 
 interface UserMobileAppProps {
   currentUser: UserAccount;
@@ -42,12 +50,19 @@ interface UserMobileAppProps {
 export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLogout, onPhotoUploaded }) => {
   const [activeTab, setActiveTab] = useState<'tasks' | 'camera' | 'history' | 'profile'>('tasks');
   const [myPhotos, setMyPhotos] = useState<PhotoUpload[]>(() => {
+    const deletedIds = getDeletedPhotoIds();
+    // 1. Try from in-memory / IDB engine
+    const memory = getInMemoryPhotos().filter(
+      (p) => (p.userId === currentUser.id || p.username === currentUser.username) && !deletedIds.includes(p.id)
+    );
+    if (memory.length > 0) return memory;
+
+    // 2. Try from localStorage
     try {
       const raw = localStorage.getItem(`spmb_local_photos_${currentUser.id}`);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          const deletedIds = getDeletedPhotoIds();
           return parsed.filter((p: PhotoUpload) => p && !deletedIds.includes(p.id));
         }
       }
@@ -96,11 +111,25 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
   const [isLogoutModalOpen, setIsLogoutModalOpen] = useState<boolean>(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  // Sync photos from Firestore real-time for this venue/user, preserving offline cached photos
+  // Sync photos from Firestore real-time for this venue/user, preserving all local photos (never disappear)
   useEffect(() => {
+    // 1. Cross-tab real-time listener (updates instantly when Admin verifies or deletes)
+    const unsubCrossTab = subscribeCrossTabSync((event) => {
+      if (event?.type === 'PHOTO_ADDED' || event?.type === 'PHOTO_STATUS_UPDATED' || event?.type === 'PHOTO_DELETED') {
+        const deletedIds = getDeletedPhotoIds();
+        setMyPhotos(
+          getInMemoryPhotos().filter(
+            (p) => (p.userId === currentUser.id || p.username === currentUser.username) && !deletedIds.includes(p.id)
+          )
+        );
+      }
+    });
+
+    // 2. Firestore listener with resilient merge
+    let unsubscribeFirestore: (() => void) | undefined;
     try {
       const q = query(collection(db, 'photos'), where('userId', '==', currentUser.id));
-      const unsubscribe = onSnapshot(
+      unsubscribeFirestore = onSnapshot(
         q,
         (snapshot) => {
           const remotePhotos: PhotoUpload[] = [];
@@ -110,29 +139,54 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
 
           setMyPhotos((prevLocal) => {
             const deletedIds = getDeletedPhotoIds();
-            const validRemote = remotePhotos.filter((p) => !deletedIds.includes(p.id));
-            // Only keep unsynced local photos that are still local_only and haven't been deleted
-            const unsyncedLocal = prevLocal.filter(
-              (p) => p.driveStatus === 'local_only' && !deletedIds.includes(p.id) && !validRemote.some((r) => r.id === p.id)
-            );
-            const merged = [...validRemote, ...unsyncedLocal].sort(
+            const map = new Map<string, PhotoUpload>();
+
+            // Always keep existing local photos that haven't been deleted
+            prevLocal.forEach((p) => {
+              if (p && p.id && !deletedIds.includes(p.id)) {
+                map.set(p.id, p);
+              }
+            });
+
+            // Keep in-memory photos
+            getInMemoryPhotos()
+              .filter(
+                (p) => (p.userId === currentUser.id || p.username === currentUser.username) && !deletedIds.includes(p.id)
+              )
+              .forEach((p) => map.set(p.id, p));
+
+            // Merge with remote photos
+            remotePhotos.forEach((r) => {
+              if (r && r.id && !deletedIds.includes(r.id)) {
+                const existing = map.get(r.id);
+                map.set(r.id, { ...(existing || {}), ...r });
+              }
+            });
+
+            const merged = Array.from(map.values()).sort(
               (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
             );
+
             try {
               localStorage.setItem(`spmb_local_photos_${currentUser.id}`, JSON.stringify(merged));
             } catch {}
+
             return merged;
           });
         },
         (error) => {
-          console.warn('Real-time photos listener warning (fallback to local cache):', error);
+          console.warn('Real-time photos listener warning (fallback to persistent store):', error);
         }
       );
-      return () => unsubscribe();
     } catch (err) {
       console.warn('Failed to listen to photos:', err);
     }
-  }, [currentUser.id]);
+
+    return () => {
+      unsubCrossTab();
+      if (unsubscribeFirestore) unsubscribeFirestore();
+    };
+  }, [currentUser.id, currentUser.username]);
 
   // Automatic background sync for any unsynced photos when connection is stable
   useEffect(() => {
@@ -491,16 +545,12 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       createdAt: now.toISOString()
     };
 
-    // 5. Instantly persist to local state & localStorage (GUARANTEE PHOTO IS NEVER LOST)
+    // 5. Instantly persist to IndexedDB, memory cache & localStorage (GUARANTEE ZERO DATA LOSS)
+    await savePhotoLocally(photoPayload);
+
     setMyPhotos((prev) => {
-      const filtered = prev.filter(
-        (p) => !(p.stage === selectedStage && p.category.toLowerCase() === selectedCategory.toLowerCase())
-      );
-      const updated = [photoPayload, ...filtered];
-      try {
-        localStorage.setItem(`spmb_local_photos_${currentUser.id}`, JSON.stringify(updated));
-      } catch {}
-      return updated;
+      const filtered = prev.filter((p) => p.id !== photoPayload.id);
+      return [photoPayload, ...filtered];
     });
 
     // 6. Notify parent state immediately (instant rendering in Admin Dashboard)
@@ -508,69 +558,43 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       onPhotoUploaded(photoPayload);
     }
 
-    try {
-      // 7. Write to Firestore using sanitized payload (no undefined values)
-      const cleanData = sanitizeFirestorePhoto(photoPayload);
-      await setDoc(doc(db, 'photos', photoId), cleanData);
+    // 7. Non-blocking cloud sync with safe timeout (never blocks UI even if Firestore quota exceeded)
+    const cleanData = sanitizeFirestorePhoto(photoPayload);
+    safeFirestoreWrite(setDoc(doc(db, 'photos', photoId), cleanData), 3000, 'Photo Cloud Save');
 
-      // Trigger Push Notification and Activity Log (non-blocking)
-      const notifTitle = `Foto Baru: ${currentUser.venue}`;
-      const notifMsg = `${currentUser.username} mengunggah foto [${selectedStage === 'persiapan' ? 'Tahap 1' : 'Tahap 2'}: ${selectedCategory}]${
-        driveResult ? ' dan tersimpan di Google Drive' : ''
-      } (Nama File: ${driveFileName})`;
+    // Trigger Push Notification and Activity Log (non-blocking)
+    const notifTitle = `Foto Baru: ${currentUser.venue}`;
+    const notifMsg = `${currentUser.username} mengunggah foto [${selectedStage === 'persiapan' ? 'Tahap 1' : 'Tahap 2'}: ${selectedCategory}]${
+      driveResult ? ' dan tersimpan di Google Drive' : ''
+    } (Nama File: ${driveFileName})`;
 
-      sendSystemNotification({
-        type: 'upload',
-        title: notifTitle,
-        message: notifMsg,
-        venue: currentUser.venue,
-        username: currentUser.username
-      }).catch(console.warn);
+    sendSystemNotification({
+      type: 'upload',
+      title: notifTitle,
+      message: notifMsg,
+      venue: currentUser.venue,
+      username: currentUser.username
+    }).catch(console.warn);
 
-      logActivity({
-        action: 'UPLOAD_FOTO',
-        username: currentUser.username,
-        venue: currentUser.venue,
-        details: `Unggah foto ${selectedStage} - ${selectedCategory} (File: ${driveFileName}${
-          driveResult ? ' [Google Drive Synced]' : ''
-        })`
-      }).catch(console.warn);
+    logActivity({
+      action: 'UPLOAD_FOTO',
+      username: currentUser.username,
+      venue: currentUser.venue,
+      details: `Unggah foto ${selectedStage} - ${selectedCategory} (File: ${driveFileName}${
+        driveResult ? ' [Google Drive Synced]' : ''
+      })`
+    }).catch(console.warn);
 
-      playNotificationSound();
-      setUploadSuccess(true);
-      setUploadError(null);
-      setTimeout(() => {
-        setUploadSuccess(false);
-        setCapturedRawImage(null);
-        setWatermarkedImage(null);
-        setNotes('');
-        setActiveTab('history');
-      }, 1500);
-    } catch (err) {
-      console.error('Firestore cloud upload error, trying sanitized fallback:', err);
-      try {
-        const cleanData = sanitizeFirestorePhoto(photoPayload);
-        await setDoc(doc(db, 'photos', photoId), cleanData, { merge: true });
-        setUploadSuccess(true);
-        setUploadError(null);
-      } catch (fallbackErr) {
-        console.warn('Fallback also saved locally:', fallbackErr);
-        playNotificationSound();
-        setUploadSuccess(true);
-        setUploadError(
-          'Foto tersimpan di perangkat! Mengantre untuk sinkronisasi otomatis ke cloud server.'
-        );
-      }
-      setTimeout(() => {
-        setUploadSuccess(false);
-        setCapturedRawImage(null);
-        setWatermarkedImage(null);
-        setNotes('');
-        setActiveTab('history');
-      }, 1800);
-    } finally {
-      setIsUploading(false);
-    }
+    playNotificationSound();
+    setUploadSuccess(true);
+    setUploadError(null);
+    setTimeout(() => {
+      setUploadSuccess(false);
+      setCapturedRawImage(null);
+      setWatermarkedImage(null);
+      setNotes('');
+      setActiveTab('history');
+    }, 1500);
   };
 
   // Helper to check if a category is already uploaded

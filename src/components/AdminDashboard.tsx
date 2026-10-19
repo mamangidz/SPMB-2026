@@ -38,7 +38,7 @@ import { db } from '../firebase';
 import { UserAccount, PhotoUpload, SystemNotification, ActivityLog } from '../types';
 import { INITIAL_USERS, STANDARD_TAHAP1_TASKS } from '../data/initialData';
 import { sendSystemNotification, logActivity, requestPushPermission } from '../utils/notifications';
-import { markPhotoAsDeleted, updateCachedPhotoStatus } from '../utils/photoStorage';
+import { markPhotoAsDeleted, updateCachedPhotoStatus, safeFirestoreWrite } from '../utils/photoStorage';
 
 interface AdminDashboardProps {
   currentUser: UserAccount;
@@ -304,13 +304,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  // Photo Verification (Approve / Reject)
+  // Photo Verification (Approve / Reject) - 100% Instant & Resilient
   const handleVerifyPhoto = async (photoId: string, status: 'verified' | 'rejected') => {
     try {
-      const photo = photos.find(p => p.id === photoId);
+      const photo = photos.find((p) => p.id === photoId);
       const updateData: Partial<PhotoUpload> = {
         status,
-        adminComment: adminNoteInput.trim() || (status === 'verified' ? 'Foto telah diverifikasi dan sah.' : 'Foto ditolak, harap unggah ulang.'),
+        adminComment:
+          adminNoteInput.trim() ||
+          (status === 'verified' ? 'Foto telah diverifikasi dan sah.' : 'Foto ditolak, harap unggah ulang.'),
         verifiedAt: new Date().toISOString()
       };
 
@@ -319,47 +321,46 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         onUpdatePhoto(photoId, updateData);
       }
 
-      // 2. Persist update into all local storage caches
+      // 2. Persist update into IndexedDB & local storage caches
       updateCachedPhotoStatus(photoId, status, updateData);
 
-      // 3. Write to Firestore: Use setDoc with merge: true so it works even if doc was created offline
-      try {
-        const photoRef = doc(db, 'photos', photoId);
-        if (photo) {
-          await setDoc(photoRef, { ...photo, ...updateData }, { merge: true });
-        } else {
-          await setDoc(photoRef, updateData, { merge: true });
-        }
-      } catch (fErr) {
-        console.warn('Firestore photo verify warning (local state preserved):', fErr);
-      }
-
-      // 4. Non-fatal audit logging
-      logActivity({
-        action: status === 'verified' ? 'VERIFIKASI_FOTO' : 'TOLAK_FOTO',
-        username: currentUser.username,
-        venue: photo?.venue || '',
-        details: `${status === 'verified' ? 'Menyetujui' : 'Menolak'} foto ${photo?.category || ''} milik ${photo?.username || ''} (${photo?.venue || ''})`
-      }).catch(() => {});
-
-      // 5. Non-fatal system notification
-      sendSystemNotification({
-        type: 'verify',
-        title: status === 'verified' ? 'Foto Disetujui' : 'Foto Ditolak',
-        message: `Foto ${photo?.category || ''} di ${photo?.venue || ''} telah ${status === 'verified' ? 'diverifikasi dan disahkan' : 'ditolak'} oleh Admin.`,
-        venue: photo?.venue,
-        username: photo?.username
-      }).catch(() => {});
-
+      // 3. Close modal & clear note input immediately
       if (inspectingPhoto?.id === photoId) {
         setInspectingPhoto(null);
       }
       setAdminNoteInput('');
       setActionFeedback({
         type: 'success',
-        message: `Foto ${photo?.category || ''} (${photo?.venue || ''}) berhasil ${status === 'verified' ? 'disetujui' : 'ditolak'}!`
+        message: `Foto ${photo?.category || ''} (${photo?.venue || ''}) berhasil ${
+          status === 'verified' ? 'disetujui & disahkan' : 'ditolak'
+        }!`
       });
       setTimeout(() => setActionFeedback(null), 3000);
+
+      // 4. Non-blocking Firestore write with timeout (never hangs UI even if daily quota exceeded)
+      const photoRef = doc(db, 'photos', photoId);
+      safeFirestoreWrite(setDoc(photoRef, updateData, { merge: true }), 3000, 'Verify Photo');
+
+      // 5. Non-fatal audit logging
+      logActivity({
+        action: status === 'verified' ? 'VERIFIKASI_FOTO' : 'TOLAK_FOTO',
+        username: currentUser.username,
+        venue: photo?.venue || '',
+        details: `${status === 'verified' ? 'Menyetujui' : 'Menolak'} foto ${photo?.category || ''} milik ${
+          photo?.username || ''
+        } (${photo?.venue || ''})`
+      }).catch(() => {});
+
+      // 6. Non-fatal system notification
+      sendSystemNotification({
+        type: 'verify',
+        title: status === 'verified' ? 'Foto Disetujui' : 'Foto Ditolak',
+        message: `Foto ${photo?.category || ''} di ${photo?.venue || ''} telah ${
+          status === 'verified' ? 'diverifikasi dan disahkan' : 'ditolak'
+        } oleh Admin.`,
+        venue: photo?.venue,
+        username: photo?.username
+      }).catch(() => {});
     } catch (err) {
       console.error('Error updating photo verification status:', err);
       setActionFeedback({ type: 'error', message: 'Gagal memperbarui status verifikasi foto.' });
@@ -367,45 +368,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  // Delete Incoming Photo (Admin Role)
+  // Delete Incoming Photo (Admin Role) - 100% Instant & Resilient
   const handleDeletePhotoSubmit = async (photo: PhotoUpload) => {
     if (!photo) return;
     setIsDeletingPhoto(true);
     try {
-      // 1. Delete from Firestore
-      try {
-        const photoRef = doc(db, 'photos', photo.id);
-        await deleteDoc(photoRef);
-      } catch (fErr) {
-        console.warn('Firestore photo delete warning:', fErr);
-      }
-
-      // 2. Mark photo as deleted in local storage across all device caches
+      // 1. Mark photo as deleted in IndexedDB & local storage across all device caches
       markPhotoAsDeleted(photo.id, photo.userId);
 
-      // 3. Callback to parent App state for immediate UI sync
+      // 2. Callback to parent App state for immediate UI sync
       if (onDeletePhoto) {
         onDeletePhoto(photo.id);
       }
 
-      // 4. Audit Trail Log
-      logActivity({
-        action: 'HAPUS_FOTO',
-        username: currentUser.username,
-        venue: photo.venue,
-        details: `Admin menghapus foto ${photo.category} dari ${photo.username} (${photo.venue})`
-      }).catch(() => {});
-
-      // 5. System Notification
-      sendSystemNotification({
-        type: 'crud',
-        title: 'Foto Masuk Dihapus',
-        message: `Foto ${photo.category} dari ${photo.venue} (${photo.username}) telah dihapus oleh Admin.`,
-        venue: photo.venue,
-        username: photo.username
-      }).catch(() => {});
-
-      // Close inspecting modal if open for this photo
+      // 3. Close inspecting modal & delete modal immediately
       if (inspectingPhoto?.id === photo.id) {
         setInspectingPhoto(null);
       }
@@ -416,6 +392,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         message: `Foto ${photo.category} (${photo.venue}) berhasil dihapus!`
       });
       setTimeout(() => setActionFeedback(null), 3500);
+
+      // 4. Non-blocking Firestore delete with timeout
+      const photoRef = doc(db, 'photos', photo.id);
+      safeFirestoreWrite(deleteDoc(photoRef), 3000, 'Delete Photo');
+
+      // 5. Audit Trail Log
+      logActivity({
+        action: 'HAPUS_FOTO',
+        username: currentUser.username,
+        venue: photo.venue,
+        details: `Admin menghapus foto ${photo.category} dari ${photo.username} (${photo.venue})`
+      }).catch(() => {});
+
+      // 6. System Notification
+      sendSystemNotification({
+        type: 'crud',
+        title: 'Foto Masuk Dihapus',
+        message: `Foto ${photo.category} dari ${photo.venue} (${photo.username}) telah dihapus oleh Admin.`,
+        venue: photo.venue,
+        username: photo.username
+      }).catch(() => {});
     } catch (err) {
       console.error('Error deleting photo:', err);
       setActionFeedback({
