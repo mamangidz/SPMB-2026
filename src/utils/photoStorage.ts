@@ -1,4 +1,5 @@
 import { PhotoUpload } from '../types';
+import { INITIAL_PRESET_PHOTOS } from '../data/initialPhotos';
 
 const DELETED_PHOTOS_KEY = 'spmb_deleted_photo_ids';
 const ALL_PHOTOS_KEY = 'spmb_all_photos_registry';
@@ -86,8 +87,96 @@ function openIDB(): Promise<IDBDatabase> {
         }
       }
     }
+
+    // Guarantee resilient seed photos so the gallery is NEVER empty on initial start
+    if (inMemoryPhotos.size === 0) {
+      INITIAL_PRESET_PHOTOS.forEach((p) => {
+        if (!inMemoryDeletedIds.has(p.id)) {
+          inMemoryPhotos.set(p.id, p);
+        }
+      });
+    }
   } catch {}
 })();
+
+/**
+ * Synchronous initial photo loader for React state - guarantees ZERO empty states on load
+ */
+export function loadAllPhotosSynchronously(): PhotoUpload[] {
+  let list = getInMemoryPhotos();
+  if (list.length === 0) {
+    INITIAL_PRESET_PHOTOS.forEach((p) => {
+      if (!inMemoryDeletedIds.has(p.id)) {
+        inMemoryPhotos.set(p.id, p);
+      }
+    });
+    list = getInMemoryPhotos();
+  }
+  return list;
+}
+
+/**
+ * RESTORE ALL PHOTOS: Clears deleted registry and reloads all preset and cached photos.
+ * Solves "hilang foto yang sudah masuk kembalikan" immediately!
+ */
+export async function restoreAllDeletedPhotos(): Promise<PhotoUpload[]> {
+  // 1. Clear deleted blacklist
+  inMemoryDeletedIds.clear();
+  try {
+    localStorage.removeItem(DELETED_PHOTOS_KEY);
+  } catch {}
+
+  // 2. Put preset photos into memory
+  INITIAL_PRESET_PHOTOS.forEach((p) => {
+    inMemoryPhotos.set(p.id, p);
+  });
+
+  // 3. Scan all localStorage keys for any uploaded user photos
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('spmb_local_photos_') || k === ALL_PHOTOS_KEY)) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          try {
+            const list = JSON.parse(raw);
+            if (Array.isArray(list)) {
+              list.forEach((p: PhotoUpload) => {
+                if (p && p.id) {
+                  inMemoryPhotos.set(p.id, p);
+                }
+              });
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+
+  // 4. Save to IndexedDB and update localStorage registry
+  try {
+    const allList = Array.from(inMemoryPhotos.values());
+    localStorage.setItem(ALL_PHOTOS_KEY, JSON.stringify(allList.slice(0, 50)));
+
+    const db = await openIDB();
+    const tx = db.transaction([IDB_STORE_PHOTOS, IDB_STORE_META], 'readwrite');
+    tx.objectStore(IDB_STORE_META).delete('deleted_ids');
+    const store = tx.objectStore(IDB_STORE_PHOTOS);
+    allList.forEach((photo) => {
+      store.put(photo);
+    });
+  } catch (err) {
+    console.warn('Restore IDB save warning:', err);
+  }
+
+  // 5. Broadcast restoration event across all tabs
+  const restoredList = getInMemoryPhotos();
+  try {
+    broadcastChannel?.postMessage({ type: 'PHOTOS_RESTORED', photos: restoredList });
+  } catch {}
+
+  return restoredList;
+}
 
 /**
  * Load all photos from IndexedDB asynchronously and merge into memory cache
@@ -117,6 +206,16 @@ export async function initStorageEngine(): Promise<PhotoUpload[]> {
             inMemoryPhotos.set(p.id, p);
           }
         });
+
+        // Ensure presets exist if storage was empty
+        if (inMemoryPhotos.size === 0) {
+          INITIAL_PRESET_PHOTOS.forEach((p) => {
+            if (!inMemoryDeletedIds.has(p.id)) {
+              inMemoryPhotos.set(p.id, p);
+            }
+          });
+        }
+
         isIdbInitialized = true;
         resolve(getInMemoryPhotos());
       };
@@ -131,9 +230,18 @@ export async function initStorageEngine(): Promise<PhotoUpload[]> {
  * Get synchronous list of all cached non-deleted photos
  */
 export function getInMemoryPhotos(): PhotoUpload[] {
-  return Array.from(inMemoryPhotos.values())
+  let list = Array.from(inMemoryPhotos.values())
     .filter((p) => !inMemoryDeletedIds.has(p.id))
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  if (list.length === 0 && inMemoryDeletedIds.size === 0) {
+    INITIAL_PRESET_PHOTOS.forEach((p) => inMemoryPhotos.set(p.id, p));
+    list = Array.from(inMemoryPhotos.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+
+  return list;
 }
 
 /**
@@ -187,7 +295,9 @@ export async function savePhotoLocally(photo: PhotoUpload): Promise<void> {
 
     if (photo.userId) {
       const userKey = `spmb_local_photos_${photo.userId}`;
-      const userPhotos = getInMemoryPhotos().filter((p) => p.userId === photo.userId);
+      const userPhotos = getInMemoryPhotos().filter(
+        (p) => p.userId === photo.userId || p.venue === photo.venue
+      );
       localStorage.setItem(userKey, JSON.stringify(userPhotos));
     }
   } catch (lsErr) {

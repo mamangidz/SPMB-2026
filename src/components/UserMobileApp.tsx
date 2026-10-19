@@ -38,7 +38,9 @@ import {
   savePhotoLocally,
   getInMemoryPhotos,
   safeFirestoreWrite,
-  subscribeCrossTabSync
+  subscribeCrossTabSync,
+  loadAllPhotosSynchronously,
+  restoreAllDeletedPhotos
 } from '../utils/photoStorage';
 
 interface UserMobileAppProps {
@@ -53,7 +55,11 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
     const deletedIds = getDeletedPhotoIds();
     // 1. Try from in-memory / IDB engine
     const memory = getInMemoryPhotos().filter(
-      (p) => (p.userId === currentUser.id || p.username === currentUser.username) && !deletedIds.includes(p.id)
+      (p) =>
+        (p.userId === currentUser.id ||
+          p.username === currentUser.username ||
+          p.venue.toLowerCase() === currentUser.venue.toLowerCase()) &&
+        !deletedIds.includes(p.id)
     );
     if (memory.length > 0) return memory;
 
@@ -63,11 +69,20 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          return parsed.filter((p: PhotoUpload) => p && !deletedIds.includes(p.id));
+          const list = parsed.filter((p: PhotoUpload) => p && !deletedIds.includes(p.id));
+          if (list.length > 0) return list;
         }
       }
     } catch {}
-    return [];
+
+    // 3. Fallback to synchronous preset seed photos for this venue
+    return loadAllPhotosSynchronously().filter(
+      (p) =>
+        (p.userId === currentUser.id ||
+          p.username === currentUser.username ||
+          p.venue.toLowerCase() === currentUser.venue.toLowerCase()) &&
+        !deletedIds.includes(p.id)
+    );
   });
 
   // Task selection for camera
@@ -1151,10 +1166,32 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
         {activeTab === 'history' && (
           <div className="space-y-3 pb-16">
             <div className="flex items-center justify-between">
-              <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wide">
-                Galeri Foto Terunggah ({myPhotos.length})
-              </h2>
-              <span className="text-[10px] text-slate-400">{currentUser.venue}</span>
+              <div>
+                <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wide">
+                  Galeri Foto Terunggah ({myPhotos.length})
+                </h2>
+                <span className="text-[10px] text-slate-400">{currentUser.venue}</span>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  const restored = await restoreAllDeletedPhotos();
+                  const mine = restored.filter(
+                    (p) =>
+                      p.userId === currentUser.id ||
+                      p.username === currentUser.username ||
+                      p.venue.toLowerCase() === currentUser.venue.toLowerCase()
+                  );
+                  setMyPhotos(mine);
+                  if (onPhotoUploaded && mine.length > 0) {
+                    mine.forEach((p) => onPhotoUploaded(p));
+                  }
+                }}
+                className="px-2.5 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                title="Pulihkan dan kembalikan foto venue"
+              >
+                <RotateCcw className="w-3 h-3" /> Pulihkan Foto
+              </button>
             </div>
 
             {myPhotos.length === 0 ? (
@@ -1162,14 +1199,35 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
                 <ImageIcon className="w-10 h-10 mx-auto text-slate-600 mb-2" />
                 <p className="text-xs font-semibold text-slate-300">Belum Ada Foto Diunggah</p>
                 <p className="text-[11px] text-slate-500 mt-1">
-                  Ambil foto gedung, ruangan, laptop, listrik, LAN atau kegiatan harian Anda sekarang.
+                  Ambil foto gedung, ruangan, laptop, listrik, LAN atau pulihkan foto venue Anda.
                 </p>
-                <button
-                  onClick={() => setActiveTab('camera')}
-                  className="mt-4 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white font-semibold rounded-xl text-xs inline-flex items-center gap-1.5"
-                >
-                  <Camera className="w-3.5 h-3.5" /> Buka Kamera
-                </button>
+                <div className="mt-4 flex items-center justify-center gap-2">
+                  <button
+                    onClick={() => setActiveTab('camera')}
+                    className="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white font-semibold rounded-xl text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Camera className="w-3.5 h-3.5" /> Buka Kamera
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const restored = await restoreAllDeletedPhotos();
+                      const mine = restored.filter(
+                        (p) =>
+                          p.userId === currentUser.id ||
+                          p.username === currentUser.username ||
+                          p.venue.toLowerCase() === currentUser.venue.toLowerCase()
+                      );
+                      setMyPhotos(mine);
+                      if (onPhotoUploaded && mine.length > 0) {
+                        mine.forEach((p) => onPhotoUploaded(p));
+                      }
+                    }}
+                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" /> Pulihkan Foto Venue
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-2.5">

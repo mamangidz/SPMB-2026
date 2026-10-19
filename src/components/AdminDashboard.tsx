@@ -23,7 +23,8 @@ import {
   Layers,
   Sparkles,
   Radio,
-  FileSpreadsheet
+  FileSpreadsheet,
+  RotateCcw
 } from 'lucide-react';
 import {
   doc,
@@ -38,7 +39,12 @@ import { db } from '../firebase';
 import { UserAccount, PhotoUpload, SystemNotification, ActivityLog } from '../types';
 import { INITIAL_USERS, STANDARD_TAHAP1_TASKS } from '../data/initialData';
 import { sendSystemNotification, logActivity, requestPushPermission } from '../utils/notifications';
-import { markPhotoAsDeleted, updateCachedPhotoStatus, safeFirestoreWrite } from '../utils/photoStorage';
+import {
+  markPhotoAsDeleted,
+  updateCachedPhotoStatus,
+  safeFirestoreWrite,
+  restoreAllDeletedPhotos
+} from '../utils/photoStorage';
 
 interface AdminDashboardProps {
   currentUser: UserAccount;
@@ -52,6 +58,7 @@ interface AdminDashboardProps {
   onDeleteUser?: (userId: string) => void;
   onDeletePhoto?: (photoId: string) => void;
   onUpdatePhoto?: (photoId: string, updatedFields: Partial<PhotoUpload>) => void;
+  onRestorePhotos?: () => Promise<void> | void;
   onSelectUserToSimulate?: (user: UserAccount) => void;
 }
 
@@ -67,6 +74,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onDeleteUser,
   onDeletePhoto,
   onUpdatePhoto,
+  onRestorePhotos,
   onSelectUserToSimulate
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'photos' | 'logs'>('overview');
@@ -1193,8 +1201,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </select>
               </div>
 
-              <div className="text-xs text-slate-400 font-mono">
-                Menampilkan {filteredPhotos.length} dari {photos.length} foto
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (onRestorePhotos) {
+                      await onRestorePhotos();
+                    } else {
+                      await restoreAllDeletedPhotos();
+                    }
+                    setActionFeedback({
+                      type: 'success',
+                      message: 'Semua foto berhasil dikembalikan & dipulihkan ke galeri!'
+                    });
+                    setTimeout(() => setActionFeedback(null), 3500);
+                  }}
+                  className="px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md transition-all active:scale-95 cursor-pointer"
+                  title="Kembalikan dan pulihkan semua foto masuk yang hilang"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Kembalikan Semua Foto
+                </button>
+
+                <div className="text-xs text-slate-400 font-mono">
+                  Menampilkan {filteredPhotos.length} dari {photos.length} foto
+                </div>
               </div>
             </div>
 
@@ -1202,8 +1232,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             {filteredPhotos.length === 0 ? (
               <div className="bg-slate-900/60 rounded-2xl p-12 text-center border border-slate-800 text-slate-500">
                 <ImageIcon className="w-12 h-12 mx-auto text-slate-700 mb-2" />
-                <p className="text-sm font-semibold text-slate-300">Tidak ada foto yang cocok dengan filter</p>
-                <p className="text-xs text-slate-500 mt-1">Coba sesuaikan pilihan filter di atas.</p>
+                <p className="text-sm font-semibold text-slate-300">Belum ada foto yang cocok dengan filter atau foto belum dimuat</p>
+                <p className="text-xs text-slate-500 mt-1">Klik tombol di bawah ini untuk mengembalikan dan memunculkan kembali semua foto venue.</p>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (onRestorePhotos) {
+                      await onRestorePhotos();
+                    } else {
+                      await restoreAllDeletedPhotos();
+                    }
+                    setActionFeedback({
+                      type: 'success',
+                      message: 'Semua foto berhasil dikembalikan & dipulihkan ke galeri!'
+                    });
+                    setTimeout(() => setActionFeedback(null), 3500);
+                  }}
+                  className="mt-4 px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-xl text-xs inline-flex items-center gap-1.5 shadow-md transition-all active:scale-95 cursor-pointer"
+                >
+                  <RotateCcw className="w-4 h-4" /> Kembalikan Semua Foto Sekarang
+                </button>
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">

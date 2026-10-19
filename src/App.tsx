@@ -26,6 +26,8 @@ import {
   markPhotoAsDeleted,
   getInMemoryPhotos,
   initStorageEngine,
+  loadAllPhotosSynchronously,
+  restoreAllDeletedPhotos,
   subscribeCrossTabSync
 } from './utils/photoStorage';
 
@@ -87,7 +89,7 @@ function loadInitialSession(): UserAccount | null {
 export default function App() {
   // Collections state - initialized with resilient data, NEVER empty!
   const [users, setUsers] = useState<UserAccount[]>(loadInitialUsers);
-  const [photos, setPhotos] = useState<PhotoUpload[]>([]);
+  const [photos, setPhotos] = useState<PhotoUpload[]>(loadAllPhotosSynchronously);
   const [notifications, setNotifications] = useState<SystemNotification[]>([]);
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
 
@@ -411,6 +413,11 @@ export default function App() {
     );
   };
 
+  const handleRestorePhotos = async () => {
+    const restored = await restoreAllDeletedPhotos();
+    setPhotos(restored);
+  };
+
   // Handle User Logout - 100% Reliable and Instant
   const handleLogout = () => {
     const userToLogOut = currentUser;
@@ -477,6 +484,7 @@ export default function App() {
           onDeleteUser={handleDeleteUserLocal}
           onDeletePhoto={handleDeletePhotoLocal}
           onUpdatePhoto={handleUpdatePhotoLocal}
+          onRestorePhotos={handleRestorePhotos}
           onSelectUserToSimulate={(targetUser) => setSimulatedUser(targetUser)}
         />
       ) : (
