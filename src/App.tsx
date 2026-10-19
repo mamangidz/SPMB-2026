@@ -21,7 +21,7 @@ import { UserMobileApp } from './components/UserMobileApp';
 import { ToastNotification } from './components/ToastNotification';
 import { sendSystemNotification, logActivity, requestPushPermission } from './utils/notifications';
 import { playLoginAlertSound, playNotificationSound } from './utils/audio';
-import { isPhotoDeleted, markPhotoAsDeleted } from './utils/photoStorage';
+import { isPhotoDeleted, markPhotoAsDeleted, syncLocalPhotosToFirestore } from './utils/photoStorage';
 
 const STORAGE_USERS_KEY = 'spmb_stan_users_cache_v2';
 const STORAGE_SESSION_KEY = 'spmb_stan_active_session_v2';
@@ -94,9 +94,14 @@ export default function App() {
   const [activeToast, setActiveToast] = useState<SystemNotification | null>(null);
   const initialMountRef = useRef(true);
 
-  // 1. Validate connection and auto-seed users if needed
+  // 1. Validate connection and auto-seed users / auto-sync local photos if needed
   useEffect(() => {
     testConnection();
+    syncLocalPhotosToFirestore(db).then((count) => {
+      if (count > 0) {
+        console.log(`Auto-synced ${count} local photos to Firestore.`);
+      }
+    }).catch(console.warn);
   }, []);
 
   // 2. Real-time Users Listener with automatic seeding and resilient cache
@@ -477,6 +482,9 @@ export default function App() {
               <UserMobileApp
                 currentUser={activeEffectiveUser}
                 onLogout={handleLogout}
+                onPhotoUploaded={(newPhoto) => {
+                  setPhotos((prev) => [newPhoto, ...prev.filter((p) => p.id !== newPhoto.id)]);
+                }}
               />
             )}
           </AndroidFrame>

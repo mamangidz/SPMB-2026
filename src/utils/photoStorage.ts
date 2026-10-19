@@ -107,4 +107,80 @@ export function updateCachedPhotoStatus(
     console.warn('Failed to update photo status in localStorage:', err);
   }
 }
+/**
+ * Sanitize a PhotoUpload object so Firestore never rejects it due to undefined fields or invalid values
+ */
+export function sanitizeFirestorePhoto(photo: PhotoUpload): Record<string, any> {
+  const clean: Record<string, any> = {
+    id: photo.id,
+    userId: photo.userId || '',
+    username: photo.username || '',
+    venue: photo.venue || '',
+    stage: photo.stage || 'persiapan',
+    category: photo.category || 'foto gedung',
+    photoDate: photo.photoDate || '',
+    photoTime: photo.photoTime || '',
+    latitude: typeof photo.latitude === 'number' && !isNaN(photo.latitude) ? photo.latitude : -6.2088,
+    longitude: typeof photo.longitude === 'number' && !isNaN(photo.longitude) ? photo.longitude : 106.8456,
+    accuracy: typeof photo.accuracy === 'number' && !isNaN(photo.accuracy) ? photo.accuracy : 15,
+    locationName: photo.locationName || photo.venue || '',
+    imageUrl: photo.imageUrl || '',
+    status: photo.status || 'submitted',
+    driveFileName: photo.driveFileName || '',
+    driveStatus: photo.driveStatus || 'local_only',
+    notes: (photo.notes || '').trim(),
+    createdAt: photo.createdAt || new Date().toISOString()
+  };
 
+  if (photo.driveFileId) {
+    clean.driveFileId = photo.driveFileId;
+  }
+  if (photo.driveFileUrl) {
+    clean.driveFileUrl = photo.driveFileUrl;
+  }
+  if (photo.adminComment) {
+    clean.adminComment = photo.adminComment;
+  }
+  if (photo.verifiedAt) {
+    clean.verifiedAt = photo.verifiedAt;
+  }
+
+  return clean;
+}
+
+/**
+ * Sync all unsynced local photos in localStorage to Firestore
+ */
+export async function syncLocalPhotosToFirestore(db: any): Promise<number> {
+  let count = 0;
+  try {
+    const { doc, setDoc } = await import('firebase/firestore');
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('spmb_local_photos_')) {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          try {
+            const list: PhotoUpload[] = JSON.parse(raw);
+            if (Array.isArray(list)) {
+              for (const p of list) {
+                if (p && p.id && !isPhotoDeleted(p.id)) {
+                  try {
+                    const clean = sanitizeFirestorePhoto(p);
+                    await setDoc(doc(db, 'photos', p.id), clean, { merge: true });
+                    count++;
+                  } catch (itemErr) {
+                    console.warn('Sync individual local photo error:', p.id, itemErr);
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('syncLocalPhotosToFirestore error:', err);
+  }
+  return count;
+}

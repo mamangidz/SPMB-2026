@@ -138,10 +138,13 @@ export async function stampWatermarkOnImage(
 }
 
 /**
- * Compresses an arbitrary dataUrl to ensure it safely fits within limits
+ * Compresses an arbitrary dataUrl to ensure it safely fits within Firestore's 1MB document limit (<380KB)
  */
-export async function compressImageDataUrl(dataUrl: string, maxDimension = 1080): Promise<string> {
+export async function compressImageDataUrl(dataUrl: string, maxDimension = 960): Promise<string> {
   return new Promise((resolve) => {
+    if (!dataUrl || !dataUrl.startsWith('data:image')) {
+      return resolve(dataUrl);
+    }
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
@@ -157,18 +160,37 @@ export async function compressImageDataUrl(dataUrl: string, maxDimension = 1080)
             height = maxDimension;
           }
         }
-        const canvas = document.createElement('canvas');
+        let canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
-        const ctx = canvas.getContext('2d');
+        let ctx = canvas.getContext('2d');
         if (!ctx) return resolve(dataUrl);
         ctx.drawImage(img, 0, 0, width, height);
-        let q = 0.75;
+
+        let q = 0.72;
         let out = canvas.toDataURL('image/jpeg', q);
-        while (out.length > 550000 && q > 0.4) {
-          q -= 0.12;
+
+        // Progressively reduce quality if larger than 380KB
+        while (out.length > 380000 && q > 0.35) {
+          q -= 0.1;
           out = canvas.toDataURL('image/jpeg', q);
         }
+
+        // If still > 380KB, scale down resolution slightly
+        if (out.length > 380000) {
+          const scale = 0.75;
+          const scaledW = Math.round(width * scale);
+          const scaledH = Math.round(height * scale);
+          const c2 = document.createElement('canvas');
+          c2.width = scaledW;
+          c2.height = scaledH;
+          const ctx2 = c2.getContext('2d');
+          if (ctx2) {
+            ctx2.drawImage(canvas, 0, 0, scaledW, scaledH);
+            out = c2.toDataURL('image/jpeg', 0.65);
+          }
+        }
+
         resolve(out);
       } catch {
         resolve(dataUrl);

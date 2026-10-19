@@ -31,14 +31,15 @@ import {
   uploadPhotoToGoogleDrive,
   generateDriveFileName
 } from '../utils/googleDrive';
-import { getDeletedPhotoIds, isPhotoDeleted } from '../utils/photoStorage';
+import { getDeletedPhotoIds, isPhotoDeleted, sanitizeFirestorePhoto } from '../utils/photoStorage';
 
 interface UserMobileAppProps {
   currentUser: UserAccount;
   onLogout: () => void;
+  onPhotoUploaded?: (photo: PhotoUpload) => void;
 }
 
-export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLogout }) => {
+export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLogout, onPhotoUploaded }) => {
   const [activeTab, setActiveTab] = useState<'tasks' | 'camera' | 'history' | 'profile'>('tasks');
   const [myPhotos, setMyPhotos] = useState<PhotoUpload[]>(() => {
     try {
@@ -141,17 +142,25 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
         if (!raw) return;
         const list: PhotoUpload[] = JSON.parse(raw);
         for (const p of list) {
-          if (!isPhotoDeleted(p.id) && (p.driveStatus === 'local_only' || !p.status || p.status === 'submitted')) {
+          if (!isPhotoDeleted(p.id)) {
             try {
-              await setDoc(doc(db, 'photos', p.id), p, { merge: true });
-            } catch {}
+              const clean = sanitizeFirestorePhoto(p);
+              await setDoc(doc(db, 'photos', p.id), clean, { merge: true });
+            } catch (itemErr) {
+              console.warn('Sync individual offline photo error:', p.id, itemErr);
+            }
           }
         }
-      } catch {}
+      } catch (err) {
+        console.warn('syncOfflinePhotos failure:', err);
+      }
     };
 
+    // Run sync immediately on mount so pending photos are instantly pushed to cloud
+    syncOfflinePhotos();
+
     window.addEventListener('online', syncOfflinePhotos);
-    const interval = setInterval(syncOfflinePhotos, 30000);
+    const interval = setInterval(syncOfflinePhotos, 15000);
     return () => {
       window.removeEventListener('online', syncOfflinePhotos);
       clearInterval(interval);
@@ -468,17 +477,17 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       category: selectedCategory,
       photoDate: dateFormatted,
       photoTime: timeFormatted,
-      latitude: currentCoords.latitude,
-      longitude: currentCoords.longitude,
-      accuracy: currentCoords.accuracy,
-      locationName: currentCoords.locationName,
+      latitude: Number(currentCoords?.latitude ?? -6.2088),
+      longitude: Number(currentCoords?.longitude ?? 106.8456),
+      accuracy: Number(currentCoords?.accuracy ?? 15),
+      locationName: currentCoords?.locationName || currentUser.venue,
       imageUrl: safeImageUrl,
       status: 'submitted',
       driveFileName,
-      driveFileId: driveResult?.fileId,
-      driveFileUrl: driveResult?.webViewLink,
+      driveFileId: driveResult?.fileId || '',
+      driveFileUrl: driveResult?.webViewLink || '',
       driveStatus: driveResult ? 'synced' : 'local_only',
-      notes: notes.trim(),
+      notes: (notes || '').trim(),
       createdAt: now.toISOString()
     };
 
@@ -494,9 +503,15 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       return updated;
     });
 
+    // 6. Notify parent state immediately (instant rendering in Admin Dashboard)
+    if (onPhotoUploaded) {
+      onPhotoUploaded(photoPayload);
+    }
+
     try {
-      // 6. Write to Firestore using setDoc with document ID
-      await setDoc(doc(db, 'photos', photoId), photoPayload);
+      // 7. Write to Firestore using sanitized payload (no undefined values)
+      const cleanData = sanitizeFirestorePhoto(photoPayload);
+      await setDoc(doc(db, 'photos', photoId), cleanData);
 
       // Trigger Push Notification and Activity Log (non-blocking)
       const notifTitle = `Foto Baru: ${currentUser.venue}`;
@@ -523,6 +538,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
 
       playNotificationSound();
       setUploadSuccess(true);
+      setUploadError(null);
       setTimeout(() => {
         setUploadSuccess(false);
         setCapturedRawImage(null);
@@ -531,20 +547,27 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
         setActiveTab('history');
       }, 1500);
     } catch (err) {
-      console.warn('Network slow or Firestore cloud upload postponed, saved safely to local storage:', err);
-      // Photo is ALREADY saved in local storage and visible in gallery & tasks!
-      playNotificationSound();
-      setUploadSuccess(true);
-      setUploadError(
-        'Foto tersimpan aman di perangkat! Sinkronisasi otomatis ke cloud server akan berlanjut saat sinyal internet optimal.'
-      );
+      console.error('Firestore cloud upload error, trying sanitized fallback:', err);
+      try {
+        const cleanData = sanitizeFirestorePhoto(photoPayload);
+        await setDoc(doc(db, 'photos', photoId), cleanData, { merge: true });
+        setUploadSuccess(true);
+        setUploadError(null);
+      } catch (fallbackErr) {
+        console.warn('Fallback also saved locally:', fallbackErr);
+        playNotificationSound();
+        setUploadSuccess(true);
+        setUploadError(
+          'Foto tersimpan di perangkat! Mengantre untuk sinkronisasi otomatis ke cloud server.'
+        );
+      }
       setTimeout(() => {
         setUploadSuccess(false);
         setCapturedRawImage(null);
         setWatermarkedImage(null);
         setNotes('');
         setActiveTab('history');
-      }, 2200);
+      }, 1800);
     } finally {
       setIsUploading(false);
     }
