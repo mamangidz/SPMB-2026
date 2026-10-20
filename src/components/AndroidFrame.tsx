@@ -14,7 +14,18 @@ export const AndroidFrame: React.FC<AndroidFrameProps> = ({
   username,
   onLogout
 }) => {
-  const [isPhoneMockup, setIsPhoneMockup] = useState(true);
+  const [isPhoneMockup, setIsPhoneMockup] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth >= 768;
+    }
+    return true;
+  });
+  const [isMobileScreen, setIsMobileScreen] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth < 768;
+    }
+    return false;
+  });
   const [currentTime, setCurrentTime] = useState('');
 
   useEffect(() => {
@@ -24,8 +35,30 @@ export const AndroidFrame: React.FC<AndroidFrameProps> = ({
     };
     updateTime();
     const interval = setInterval(updateTime, 1000);
-    return () => clearInterval(interval);
+
+    const handleResize = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobileScreen(mobile);
+      if (mobile) {
+        setIsPhoneMockup(false);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('resize', handleResize);
+    };
   }, []);
+
+  // On real mobile phones, render edge-to-edge native mobile layout
+  if (isMobileScreen) {
+    return (
+      <div className="fixed inset-0 w-full h-full bg-slate-900 flex flex-col overflow-hidden text-slate-100 font-['Plus_Jakarta_Sans',sans-serif]">
+        {children}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-0 sm:p-4 text-slate-100">
