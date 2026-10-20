@@ -19,7 +19,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { collection, query, where, onSnapshot, doc, setDoc, updateDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, isQuotaExhausted, markQuotaExhausted } from '../firebase';
 import { UserAccount, PhotoUpload, PhotoStage } from '../types';
 import { VENUE_GEO_PRESETS } from '../data/initialData';
 import { stampWatermarkOnImage, compressImageDataUrl } from '../utils/watermark';
@@ -130,11 +130,20 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
   useEffect(() => {
     // 1. Cross-tab real-time listener (updates instantly when Admin verifies or deletes)
     const unsubCrossTab = subscribeCrossTabSync((event) => {
-      if (event?.type === 'PHOTO_ADDED' || event?.type === 'PHOTO_STATUS_UPDATED' || event?.type === 'PHOTO_DELETED') {
+      if (
+        event?.type === 'PHOTO_ADDED' ||
+        event?.type === 'PHOTO_STATUS_UPDATED' ||
+        event?.type === 'PHOTO_DELETED' ||
+        event?.type === 'PHOTOS_RESTORED'
+      ) {
         const deletedIds = getDeletedPhotoIds();
         setMyPhotos(
           getInMemoryPhotos().filter(
-            (p) => (p.userId === currentUser.id || p.username === currentUser.username) && !deletedIds.includes(p.id)
+            (p) =>
+              (p.userId === currentUser.id ||
+                p.username.toLowerCase() === currentUser.username.toLowerCase() ||
+                (p.venue && currentUser.venue && p.venue.toLowerCase() === currentUser.venue.toLowerCase())) &&
+              !deletedIds.includes(p.id)
           )
         );
       }
@@ -163,18 +172,29 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
               }
             });
 
-            // Keep in-memory photos
+            // Keep in-memory photos for this user or venue
             getInMemoryPhotos()
               .filter(
-                (p) => (p.userId === currentUser.id || p.username === currentUser.username) && !deletedIds.includes(p.id)
+                (p) =>
+                  (p.userId === currentUser.id ||
+                    p.username.toLowerCase() === currentUser.username.toLowerCase() ||
+                    (p.venue && currentUser.venue && p.venue.toLowerCase() === currentUser.venue.toLowerCase())) &&
+                  !deletedIds.includes(p.id)
               )
-              .forEach((p) => map.set(p.id, p));
+              .forEach((p) => {
+                const existing = map.get(p.id);
+                map.set(p.id, { ...(existing || {}), ...p });
+              });
 
-            // Merge with remote photos
+            // Merge with remote photos, strictly preserving non-empty imageUrl
             remotePhotos.forEach((r) => {
               if (r && r.id && !deletedIds.includes(r.id)) {
                 const existing = map.get(r.id);
-                map.set(r.id, { ...(existing || {}), ...r });
+                map.set(r.id, {
+                  ...(existing || {}),
+                  ...r,
+                  imageUrl: r.imageUrl || existing?.imageUrl || ''
+                });
               }
             });
 
@@ -189,7 +209,15 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
             return merged;
           });
         },
-        (error) => {
+        (error: any) => {
+          const msg = String(error?.message || error);
+          if (
+            error?.code === 'resource-exhausted' ||
+            msg.includes('RESOURCE_EXHAUSTED') ||
+            msg.includes('Quota limit exceeded')
+          ) {
+            markQuotaExhausted();
+          }
           console.warn('Real-time photos listener warning (fallback to persistent store):', error);
         }
       );
@@ -203,36 +231,32 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
     };
   }, [currentUser.id, currentUser.username]);
 
-  // Automatic background sync for any unsynced photos when connection is stable
+  // Background cloud sync for any unsynced photos when connection is stable and quota allows
   useEffect(() => {
     const syncOfflinePhotos = async () => {
+      if (isQuotaExhausted()) return;
       try {
         const raw = localStorage.getItem(`spmb_local_photos_${currentUser.id}`);
         if (!raw) return;
         const list: PhotoUpload[] = JSON.parse(raw);
         for (const p of list) {
           if (!isPhotoDeleted(p.id)) {
-            try {
-              const clean = sanitizeFirestorePhoto(p);
-              await setDoc(doc(db, 'photos', p.id), clean, { merge: true });
-            } catch (itemErr) {
-              console.warn('Sync individual offline photo error:', p.id, itemErr);
-            }
+            const clean = sanitizeFirestorePhoto(p);
+            await safeFirestoreWrite(() => setDoc(doc(db, 'photos', p.id), clean, { merge: true }), 2500, 'Sync Offline Photo');
+            if (isQuotaExhausted()) break;
           }
         }
       } catch (err) {
-        console.warn('syncOfflinePhotos failure:', err);
+        console.warn('syncOfflinePhotos notice:', err);
       }
     };
 
-    // Run sync immediately on mount so pending photos are instantly pushed to cloud
+    // Run sync once on mount if quota is not exhausted
     syncOfflinePhotos();
 
     window.addEventListener('online', syncOfflinePhotos);
-    const interval = setInterval(syncOfflinePhotos, 15000);
     return () => {
       window.removeEventListener('online', syncOfflinePhotos);
-      clearInterval(interval);
     };
   }, [currentUser.id]);
 
@@ -456,14 +480,19 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
         venue: photo.venue
       });
 
-      // Update Firestore
+      // Update Firestore safely
       const photoRef = doc(db, 'photos', photo.id);
-      await updateDoc(photoRef, {
-        driveFileId: res.fileId,
-        driveFileName: res.fileName,
-        driveFileUrl: res.webViewLink,
-        driveStatus: 'synced'
-      });
+      safeFirestoreWrite(
+        () =>
+          updateDoc(photoRef, {
+            driveFileId: res.fileId,
+            driveFileName: res.fileName,
+            driveFileUrl: res.webViewLink,
+            driveStatus: 'synced'
+          }),
+        2500,
+        'Drive Sync Firestore Update'
+      );
 
       await logActivity({
         action: 'DRIVE_SYNC',
@@ -575,7 +604,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
 
     // 7. Non-blocking cloud sync with safe timeout (never blocks UI even if Firestore quota exceeded)
     const cleanData = sanitizeFirestorePhoto(photoPayload);
-    safeFirestoreWrite(setDoc(doc(db, 'photos', photoId), cleanData), 3000, 'Photo Cloud Save');
+    safeFirestoreWrite(() => setDoc(doc(db, 'photos', photoId), cleanData), 3000, 'Photo Cloud Save');
 
     // Trigger Push Notification and Activity Log (non-blocking)
     const notifTitle = `Foto Baru: ${currentUser.venue}`;
@@ -980,12 +1009,17 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
                       <RefreshCw className="w-8 h-8 animate-spin mb-2" />
                       Mencetak Stempel Waktu & GPS...
                     </div>
-                  ) : (
+                  ) : (watermarkedImage || capturedRawImage) ? (
                     <img
-                      src={watermarkedImage || capturedRawImage}
+                      src={(watermarkedImage || capturedRawImage) || undefined}
                       alt="Review Hasil Foto"
                       className="w-full h-full object-contain"
                     />
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 text-xs">
+                      <ImageIcon className="w-8 h-8 mb-1 text-slate-600" />
+                      <span>Tidak ada preview foto</span>
+                    </div>
                   )}
 
                   <div className="absolute top-2 right-2 bg-emerald-500/90 text-slate-950 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 shadow">
@@ -1237,8 +1271,15 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
                     onClick={() => setViewingPhoto(photo)}
                     className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700/70 hover:border-sky-500/60 cursor-pointer transition-all shadow-md flex flex-col"
                   >
-                    <div className="aspect-[4/3] bg-black relative">
-                      <img src={photo.imageUrl} alt={photo.category} className="w-full h-full object-cover" />
+                    <div className="aspect-[4/3] bg-black relative flex items-center justify-center">
+                      {photo.imageUrl ? (
+                        <img src={photo.imageUrl} alt={photo.category} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center text-slate-500 text-[10px] p-2 text-center">
+                          <ImageIcon className="w-6 h-6 mb-1 text-slate-600" />
+                          <span>Foto tidak tersedia</span>
+                        </div>
+                      )}
                       <div className="absolute top-1 right-1">
                         <span
                           className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold shadow ${
@@ -1441,11 +1482,18 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
           </div>
 
           <div className="flex-1 bg-black rounded-xl overflow-hidden flex items-center justify-center">
-            <img
-              src={viewingPhoto.imageUrl}
-              alt="Detail Foto"
-              className="max-h-full max-w-full object-contain"
-            />
+            {viewingPhoto.imageUrl ? (
+              <img
+                src={viewingPhoto.imageUrl}
+                alt="Detail Foto"
+                className="max-h-full max-w-full object-contain"
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center text-slate-400 text-xs">
+                <ImageIcon className="w-10 h-10 mb-2 text-slate-600" />
+                <span>Gambar foto tidak tersedia</span>
+              </div>
+            )}
           </div>
 
           <div className="mt-3 bg-slate-900/90 rounded-xl p-3 border border-slate-800 text-xs text-slate-300 space-y-1">

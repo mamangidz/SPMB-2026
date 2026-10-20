@@ -1,5 +1,6 @@
 import { PhotoUpload } from '../types';
 import { INITIAL_PRESET_PHOTOS } from '../data/initialPhotos';
+import { isQuotaExhausted, markQuotaExhausted } from '../firebase';
 
 const DELETED_PHOTOS_KEY = 'spmb_deleted_photo_ids';
 const ALL_PHOTOS_KEY = 'spmb_all_photos_registry';
@@ -89,13 +90,11 @@ function openIDB(): Promise<IDBDatabase> {
     }
 
     // Guarantee resilient seed photos so the gallery is NEVER empty on initial start
-    if (inMemoryPhotos.size === 0) {
-      INITIAL_PRESET_PHOTOS.forEach((p) => {
-        if (!inMemoryDeletedIds.has(p.id)) {
-          inMemoryPhotos.set(p.id, p);
-        }
-      });
-    }
+    INITIAL_PRESET_PHOTOS.forEach((p) => {
+      if (!inMemoryDeletedIds.has(p.id) && !inMemoryPhotos.has(p.id)) {
+        inMemoryPhotos.set(p.id, p);
+      }
+    });
   } catch {}
 })();
 
@@ -103,16 +102,12 @@ function openIDB(): Promise<IDBDatabase> {
  * Synchronous initial photo loader for React state - guarantees ZERO empty states on load
  */
 export function loadAllPhotosSynchronously(): PhotoUpload[] {
-  let list = getInMemoryPhotos();
-  if (list.length === 0) {
-    INITIAL_PRESET_PHOTOS.forEach((p) => {
-      if (!inMemoryDeletedIds.has(p.id)) {
-        inMemoryPhotos.set(p.id, p);
-      }
-    });
-    list = getInMemoryPhotos();
-  }
-  return list;
+  INITIAL_PRESET_PHOTOS.forEach((p) => {
+    if (!inMemoryDeletedIds.has(p.id) && !inMemoryPhotos.has(p.id)) {
+      inMemoryPhotos.set(p.id, p);
+    }
+  });
+  return getInMemoryPhotos();
 }
 
 /**
@@ -482,18 +477,28 @@ export function sanitizeFirestorePhoto(photo: PhotoUpload): Record<string, any> 
  * Safe Firestore write with timeout to prevent hanging UI when daily quota is exhausted
  */
 export async function safeFirestoreWrite<T>(
-  writePromise: Promise<T>,
+  writePromiseOrFactory: Promise<T> | (() => Promise<T>),
   timeoutMs = 2500,
   fallbackMsg = 'Firestore write completed locally'
 ): Promise<T | null> {
+  if (isQuotaExhausted()) {
+    return null;
+  }
   try {
     const timeoutPromise = new Promise<null>((resolve) => {
       setTimeout(() => resolve(null), timeoutMs);
     });
-    const result = await Promise.race([writePromise, timeoutPromise]);
+    const promise = typeof writePromiseOrFactory === 'function' ? writePromiseOrFactory() : writePromiseOrFactory;
+    const result = await Promise.race([promise, timeoutPromise]);
     return result;
   } catch (err: any) {
-    if (err?.code === 'resource-exhausted' || String(err).includes('RESOURCE_EXHAUSTED')) {
+    const msg = String(err?.message || err);
+    if (
+      err?.code === 'resource-exhausted' ||
+      msg.includes('RESOURCE_EXHAUSTED') ||
+      msg.includes('Quota limit exceeded')
+    ) {
+      markQuotaExhausted();
       console.warn('Firestore daily write quota reached - saved securely to offline persistent storage.');
     } else {
       console.warn('Firestore background write notification:', fallbackMsg, err);

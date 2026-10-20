@@ -11,7 +11,7 @@ import {
   updateDoc,
   writeBatch
 } from 'firebase/firestore';
-import { db, testConnection } from './firebase';
+import { db, testConnection, executeFirestoreSafe, isQuotaExhausted, markQuotaExhausted } from './firebase';
 import { UserAccount, PhotoUpload, SystemNotification, ActivityLog } from './types';
 import { INITIAL_USERS } from './data/initialData';
 import { LoginForm } from './components/LoginForm';
@@ -120,24 +120,27 @@ export default function App() {
         usersCol,
         async (snapshot) => {
           if (snapshot.empty) {
-            console.log('Seeding initial 21 users to Firestore...');
-            try {
-              const batch = writeBatch(db);
-              for (const u of INITIAL_USERS) {
-                const userRef = doc(db, 'users', u.id);
-                batch.set(userRef, {
-                  ...u,
-                  createdAt: new Date().toISOString()
-                });
-              }
-              await batch.commit();
-            } catch (seedErr) {
-              console.warn('Auto-seed error:', seedErr);
-            }
             setUsers(ensureAdminInList(INITIAL_USERS));
             try {
               localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(INITIAL_USERS));
             } catch {}
+
+            // Only attempt Firestore seed if quota is not reached
+            if (!isQuotaExhausted()) {
+              try {
+                const batch = writeBatch(db);
+                for (const u of INITIAL_USERS) {
+                  const userRef = doc(db, 'users', u.id);
+                  batch.set(userRef, {
+                    ...u,
+                    createdAt: new Date().toISOString()
+                  });
+                }
+                executeFirestoreSafe(() => batch.commit(), null, 'Seed Users');
+              } catch (seedErr) {
+                console.warn('Auto-seed notice:', seedErr);
+              }
+            }
           } else {
             const list: UserAccount[] = [];
             snapshot.forEach((d) => {
@@ -151,7 +154,15 @@ export default function App() {
           }
           setIsInitializing(false);
         },
-        (error) => {
+        (error: any) => {
+          const msg = String(error?.message || error);
+          if (
+            error?.code === 'resource-exhausted' ||
+            msg.includes('RESOURCE_EXHAUSTED') ||
+            msg.includes('Quota limit exceeded')
+          ) {
+            markQuotaExhausted();
+          }
           console.warn('Error listening to users (fallback to cached/initial):', error);
           setIsInitializing(false);
         }
@@ -242,7 +253,15 @@ export default function App() {
 
           setPhotos(list);
         },
-        (error) => {
+        (error: any) => {
+          const msg = String(error?.message || error);
+          if (
+            error?.code === 'resource-exhausted' ||
+            msg.includes('RESOURCE_EXHAUSTED') ||
+            msg.includes('Quota limit exceeded')
+          ) {
+            markQuotaExhausted();
+          }
           console.warn('Photos Firestore listener warning (using persistent storage):', error);
           const currentLocal = getInMemoryPhotos();
           if (currentLocal.length > 0) {
@@ -289,7 +308,15 @@ export default function App() {
           }
           initialMountRef.current = false;
         },
-        (error) => {
+        (error: any) => {
+          const msg = String(error?.message || error);
+          if (
+            error?.code === 'resource-exhausted' ||
+            msg.includes('RESOURCE_EXHAUSTED') ||
+            msg.includes('Quota limit exceeded')
+          ) {
+            markQuotaExhausted();
+          }
           console.warn('Error listening to notifications:', error);
         }
       );
@@ -313,7 +340,15 @@ export default function App() {
           list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
           setActivityLogs(list);
         },
-        (error) => {
+        (error: any) => {
+          const msg = String(error?.message || error);
+          if (
+            error?.code === 'resource-exhausted' ||
+            msg.includes('RESOURCE_EXHAUSTED') ||
+            msg.includes('Quota limit exceeded')
+          ) {
+            markQuotaExhausted();
+          }
           console.warn('Error listening to activity logs:', error);
         }
       );
@@ -334,16 +369,17 @@ export default function App() {
     // Request desktop notifications permission seamlessly
     requestPushPermission().catch(() => {});
 
-    // Update isOnline in Firestore
-    try {
-      const userRef = doc(db, 'users', user.id);
-      await updateDoc(userRef, {
-        isOnline: true,
-        lastLoginAt: new Date().toISOString()
-      });
-    } catch (err) {
-      console.warn('Failed to update online status in Firestore:', err);
-    }
+    // Update isOnline in Firestore with Quota Guard
+    const userRef = doc(db, 'users', user.id);
+    executeFirestoreSafe(
+      () =>
+        updateDoc(userRef, {
+          isOnline: true,
+          lastLoginAt: new Date().toISOString()
+        }),
+      null,
+      'User Login Online Status'
+    );
 
     // REQUIREMENT 8: Notifikasi setiap role user yang melakukan login secara real-time pada dashboard admin
     if (user.role === 'user') {
@@ -428,23 +464,24 @@ export default function App() {
       localStorage.removeItem(STORAGE_SESSION_KEY);
     } catch {}
 
-    // 2. Perform background Firestore status cleanup asynchronously
+    // 2. Perform background Firestore status cleanup asynchronously with Quota Guard
     if (userToLogOut) {
-      try {
-        const userRef = doc(db, 'users', userToLogOut.id);
-        updateDoc(userRef, {
-          isOnline: false
-        }).catch((err) => console.warn('Background logout status update:', err));
+      const userRef = doc(db, 'users', userToLogOut.id);
+      executeFirestoreSafe(
+        () =>
+          updateDoc(userRef, {
+            isOnline: false
+          }),
+        null,
+        'User Logout Online Status'
+      );
 
-        logActivity({
-          action: 'LOGOUT',
-          username: userToLogOut.username,
-          venue: userToLogOut.venue,
-          details: 'Pengguna keluar dari aplikasi'
-        }).catch((err) => console.warn('Background logout activity log:', err));
-      } catch (err) {
-        console.warn('Logout background trigger warning:', err);
-      }
+      logActivity({
+        action: 'LOGOUT',
+        username: userToLogOut.username,
+        venue: userToLogOut.venue,
+        details: 'Pengguna keluar dari aplikasi'
+      }).catch(() => {});
     }
   };
 

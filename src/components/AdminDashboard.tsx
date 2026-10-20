@@ -203,7 +203,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       // 2. Save document to Firestore
       try {
-        await setDoc(doc(db, 'users', newId), payload);
+        await safeFirestoreWrite(() => setDoc(doc(db, 'users', newId), payload), 2500, 'Add User');
       } catch (fErr) {
         console.warn('Firestore user save handled locally:', fErr);
       }
@@ -259,7 +259,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       // 2. Persist to Firestore
       try {
         const userRef = doc(db, 'users', editingUser.id);
-        await setDoc(userRef, updatedUser, { merge: true });
+        await safeFirestoreWrite(() => setDoc(userRef, updatedUser, { merge: true }), 2500, 'Update User');
       } catch (fErr) {
         console.warn('Firestore update handled locally:', fErr);
       }
@@ -296,7 +296,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       // 2. Delete from Firestore
       try {
-        await deleteDoc(doc(db, 'users', userId));
+        await safeFirestoreWrite(() => deleteDoc(doc(db, 'users', userId)), 2500, 'Delete User');
       } catch (fErr) {
         console.warn('Firestore delete handled locally:', fErr);
       }
@@ -347,7 +347,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       // 4. Non-blocking Firestore write with timeout (never hangs UI even if daily quota exceeded)
       const photoRef = doc(db, 'photos', photoId);
-      safeFirestoreWrite(setDoc(photoRef, updateData, { merge: true }), 3000, 'Verify Photo');
+      safeFirestoreWrite(() => setDoc(photoRef, updateData, { merge: true }), 3000, 'Verify Photo');
 
       // 5. Non-fatal audit logging
       logActivity({
@@ -403,7 +403,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       // 4. Non-blocking Firestore delete with timeout
       const photoRef = doc(db, 'photos', photo.id);
-      safeFirestoreWrite(deleteDoc(photoRef), 3000, 'Delete Photo');
+      safeFirestoreWrite(() => deleteDoc(photoRef), 3000, 'Delete Photo');
 
       // 5. Audit Trail Log
       logActivity({
@@ -504,7 +504,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleMarkAllNotifsRead = async () => {
     try {
       for (const notif of notifications.filter(n => !n.read)) {
-        await updateDoc(doc(db, 'notifications', notif.id), { read: true });
+        await safeFirestoreWrite(() => updateDoc(doc(db, 'notifications', notif.id), { read: true }), 1500, 'Mark Notif Read');
       }
     } catch (err) {
       console.warn('Failed to mark notifications read:', err);
@@ -856,8 +856,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         onClick={() => setInspectingPhoto(photo)}
                         className="bg-slate-800/80 rounded-xl p-2.5 border border-slate-700/70 hover:border-sky-500/50 cursor-pointer transition-all flex gap-3 items-center group/feed"
                       >
-                        <div className="w-14 h-14 bg-black rounded-lg overflow-hidden shrink-0 border border-slate-700 relative">
-                          <img src={photo.imageUrl} alt={photo.category} className="w-full h-full object-cover" />
+                        <div className="w-14 h-14 bg-black rounded-lg overflow-hidden shrink-0 border border-slate-700 relative flex items-center justify-center">
+                          {photo.imageUrl ? (
+                            <img src={photo.imageUrl} alt={photo.category} className="w-full h-full object-cover" />
+                          ) : (
+                            <ImageIcon className="w-5 h-5 text-slate-600" />
+                          )}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between">
@@ -1263,13 +1267,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     {/* Image Preview with Watermark Stamp */}
                     <div
                       onClick={() => setInspectingPhoto(photo)}
-                      className="aspect-[4/3] bg-black relative cursor-pointer group overflow-hidden"
+                      className="aspect-[4/3] bg-black relative cursor-pointer group overflow-hidden flex items-center justify-center"
                     >
-                      <img
-                        src={photo.imageUrl}
-                        alt={photo.category}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
+                      {photo.imageUrl ? (
+                        <img
+                          src={photo.imageUrl}
+                          alt={photo.category}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center text-slate-500 text-xs">
+                          <ImageIcon className="w-8 h-8 mb-1 text-slate-600" />
+                          <span>Gambar tidak tersedia</span>
+                        </div>
+                      )}
                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-semibold gap-1.5">
                         <Eye className="w-4 h-4" /> Periksa Rincian
                       </div>
@@ -1786,11 +1797,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <div className="flex-1 max-w-5xl mx-auto w-full flex flex-col lg:flex-row gap-4 overflow-hidden">
             {/* Left: Big Stamped Photo View */}
             <div className="flex-1 bg-black rounded-2xl overflow-hidden flex items-center justify-center border border-slate-800 relative">
-              <img
-                src={inspectingPhoto.imageUrl}
-                alt="Foto Stempel"
-                className="max-h-full max-w-full object-contain"
-              />
+              {inspectingPhoto.imageUrl ? (
+                <img
+                  src={inspectingPhoto.imageUrl}
+                  alt="Foto Stempel"
+                  className="max-h-full max-w-full object-contain"
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center text-slate-400 text-xs gap-2">
+                  <ImageIcon className="w-10 h-10 text-slate-600" />
+                  <span>Gambar tidak ditemukan</span>
+                </div>
+              )}
             </div>
 
             {/* Right: Metadata & Verification Controls */}
@@ -1942,12 +1960,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             {/* Photo Preview & Info Summary */}
             <div className="bg-slate-950/70 rounded-2xl p-3 border border-slate-800/80 flex gap-3 items-center">
-              <div className="w-16 h-16 rounded-xl overflow-hidden bg-black shrink-0 border border-slate-800">
-                <img
-                  src={deletingPhoto.imageUrl}
-                  alt={deletingPhoto.category}
-                  className="w-full h-full object-cover"
-                />
+              <div className="w-16 h-16 rounded-xl overflow-hidden bg-black shrink-0 border border-slate-800 flex items-center justify-center">
+                {deletingPhoto.imageUrl ? (
+                  <img
+                    src={deletingPhoto.imageUrl}
+                    alt={deletingPhoto.category}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <ImageIcon className="w-6 h-6 text-slate-600" />
+                )}
               </div>
               <div className="flex-1 min-w-0 text-xs space-y-0.5">
                 <div className="font-bold text-slate-200 truncate">{deletingPhoto.venue}</div>

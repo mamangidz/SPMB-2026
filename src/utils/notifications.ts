@@ -1,5 +1,5 @@
 import { collection, addDoc } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { db, executeFirestoreSafe } from '../firebase';
 import { NotificationType } from '../types';
 import { playLoginAlertSound, playNotificationSound } from './audio';
 
@@ -58,22 +58,17 @@ export async function sendSystemNotification({
   // 2. Trigger browser push
   showBrowserPush(title, message);
 
-  // 3. Persist to Firestore notifications collection for real-time sync
-  try {
-    const notifData = {
-      type,
-      title,
-      message,
-      venue: venue || '',
-      username: username || '',
-      read: false,
-      createdAt: new Date().toISOString()
-    };
-    await addDoc(collection(db, 'notifications'), notifData);
-  } catch (err) {
-    console.error('Failed to save notification to Firestore:', err);
-    // Don't crash user flow if network glitches
-  }
+  // 3. Persist to Firestore notifications collection with Quota Guard
+  const notifData = {
+    type,
+    title,
+    message,
+    venue: venue || '',
+    username: username || '',
+    read: false,
+    createdAt: new Date().toISOString()
+  };
+  executeFirestoreSafe(() => addDoc(collection(db, 'notifications'), notifData), null, 'Save Notification');
 }
 
 export async function logActivity({
@@ -87,16 +82,12 @@ export async function logActivity({
   venue: string;
   details: string;
 }) {
-  try {
-    const logData = {
-      action,
-      username,
-      venue,
-      details,
-      createdAt: new Date().toISOString()
-    };
-    await addDoc(collection(db, 'activity_logs'), logData);
-  } catch (err) {
-    console.error('Failed to log activity to Firestore:', err);
-  }
+  const logData = {
+    action,
+    username,
+    venue,
+    details,
+    createdAt: new Date().toISOString()
+  };
+  executeFirestoreSafe(() => addDoc(collection(db, 'activity_logs'), logData), null, 'Log Activity');
 }
