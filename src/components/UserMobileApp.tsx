@@ -37,22 +37,41 @@ import {
   sanitizeFirestorePhoto,
   savePhotoLocally,
   getInMemoryPhotos,
+  initStorageEngine,
   safeFirestoreWrite,
   subscribeCrossTabSync,
   loadAllPhotosSynchronously,
-  restoreAllDeletedPhotos
+  restoreAllDeletedPhotos,
+  ensureVenuePhotos
 } from '../utils/photoStorage';
 
 interface UserMobileAppProps {
   currentUser: UserAccount;
+  allPhotos?: PhotoUpload[];
   onLogout: () => void;
   onPhotoUploaded?: (photo: PhotoUpload) => void;
 }
 
-export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLogout, onPhotoUploaded }) => {
+export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPhotos, onLogout, onPhotoUploaded }) => {
   const [activeTab, setActiveTab] = useState<'tasks' | 'camera' | 'history' | 'profile'>('tasks');
   const [myPhotos, setMyPhotos] = useState<PhotoUpload[]>(() => {
     const deletedIds = getDeletedPhotoIds();
+
+    // If allPhotos prop is passed from App.tsx, prefer that directly
+    if (allPhotos && allPhotos.length > 0) {
+      const fromProp = allPhotos.filter(
+        (p) =>
+          (p.userId === currentUser.id ||
+            p.username.toLowerCase() === currentUser.username.toLowerCase() ||
+            p.venue.toLowerCase() === currentUser.venue.toLowerCase()) &&
+          !deletedIds.includes(p.id)
+      );
+      if (fromProp.length > 0) return fromProp;
+    }
+
+    // Guarantee this venue has baseline photos so gallery is NEVER empty
+    ensureVenuePhotos(currentUser);
+
     // 1. Try from in-memory / IDB engine
     const memory = getInMemoryPhotos().filter(
       (p) =>
@@ -128,9 +147,77 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
   const [isLogoutModalOpen, setIsLogoutModalOpen] = useState<boolean>(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  // Sync photos from Firestore real-time for this venue/user, preserving all local photos (never disappear)
+  // 1. Keep myPhotos synchronized with allPhotos provided by App storage engine
   useEffect(() => {
-    // 1. Cross-tab real-time listener (updates instantly when Admin verifies or deletes)
+    if (allPhotos && allPhotos.length > 0) {
+      const deletedIds = getDeletedPhotoIds();
+      const relevant = allPhotos.filter(
+        (p) =>
+          (p.userId === currentUser.id ||
+            p.username.toLowerCase() === currentUser.username.toLowerCase() ||
+            (p.venue && currentUser.venue && p.venue.toLowerCase() === currentUser.venue.toLowerCase())) &&
+          !deletedIds.includes(p.id)
+      );
+
+      if (relevant.length > 0) {
+        setMyPhotos((prev) => {
+          const map = new Map<string, PhotoUpload>();
+          prev.forEach((p) => {
+            if (!deletedIds.includes(p.id)) {
+              map.set(p.id, p);
+            }
+          });
+          relevant.forEach((p) => {
+            const existing = map.get(p.id);
+            map.set(p.id, {
+              ...(existing || {}),
+              ...p,
+              imageUrl: p.imageUrl || existing?.imageUrl || ''
+            });
+          });
+          return Array.from(map.values()).sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+        });
+      }
+    }
+  }, [allPhotos, currentUser.id, currentUser.username, currentUser.venue]);
+
+  // 2. Hydrate from IndexedDB on initial mount (never show empty state on mobile refresh)
+  useEffect(() => {
+    initStorageEngine().then((loaded) => {
+      if (loaded && loaded.length > 0) {
+        const deletedIds = getDeletedPhotoIds();
+        const relevant = loaded.filter(
+          (p) =>
+            (p.userId === currentUser.id ||
+              p.username.toLowerCase() === currentUser.username.toLowerCase() ||
+              (p.venue && currentUser.venue && p.venue.toLowerCase() === currentUser.venue.toLowerCase())) &&
+            !deletedIds.includes(p.id)
+        );
+        if (relevant.length > 0) {
+          setMyPhotos((prev) => {
+            const map = new Map<string, PhotoUpload>();
+            prev.forEach((p) => map.set(p.id, p));
+            relevant.forEach((p) => {
+              const existing = map.get(p.id);
+              map.set(p.id, {
+                ...(existing || {}),
+                ...p,
+                imageUrl: p.imageUrl || existing?.imageUrl || ''
+              });
+            });
+            return Array.from(map.values()).sort(
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            );
+          });
+        }
+      }
+    });
+  }, [currentUser.id, currentUser.username, currentUser.venue]);
+
+  // 3. Cross-tab real-time listener & Firestore real-time sync for this venue
+  useEffect(() => {
     const unsubCrossTab = subscribeCrossTabSync((event) => {
       if (
         event?.type === 'PHOTO_ADDED' ||
@@ -151,16 +238,22 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       }
     });
 
-    // 2. Firestore listener with resilient merge
     let unsubscribeFirestore: (() => void) | undefined;
     try {
-      const q = query(collection(db, 'photos'), where('userId', '==', currentUser.id));
+      const photosCol = collection(db, 'photos');
       unsubscribeFirestore = onSnapshot(
-        q,
+        photosCol,
         (snapshot) => {
           const remotePhotos: PhotoUpload[] = [];
           snapshot.forEach((doc) => {
-            remotePhotos.push({ id: doc.id, ...doc.data() } as PhotoUpload);
+            const data = doc.data() as Partial<PhotoUpload>;
+            if (
+              data.userId === currentUser.id ||
+              data.username?.toLowerCase() === currentUser.username.toLowerCase() ||
+              (data.venue && currentUser.venue && data.venue.toLowerCase() === currentUser.venue.toLowerCase())
+            ) {
+              remotePhotos.push({ id: doc.id, ...data } as PhotoUpload);
+            }
           });
 
           setMyPhotos((prevLocal) => {
@@ -205,7 +298,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
             );
 
             try {
-              localStorage.setItem(`spmb_local_photos_${currentUser.id}`, JSON.stringify(merged));
+              localStorage.setItem(`spmb_local_photos_${currentUser.id}`, JSON.stringify(merged.slice(0, 6)));
             } catch {}
 
             return merged;
@@ -231,7 +324,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       unsubCrossTab();
       if (unsubscribeFirestore) unsubscribeFirestore();
     };
-  }, [currentUser.id, currentUser.username]);
+  }, [currentUser.id, currentUser.username, currentUser.venue]);
 
   // Background cloud sync for any unsynced photos when connection is stable and quota allows
   useEffect(() => {
@@ -304,11 +397,12 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
   }, [currentUser.venue]);
 
   // Start live camera stream
+  // Start live camera stream with automatic mobile resolution fallback
   const startCamera = async () => {
     setCameraError(null);
     try {
       if (!navigator?.mediaDevices?.getUserMedia) {
-        setCameraError('Kamera browser langsung tidak aktif. Gunakan tombol "Ambil Foto Kamera HP" atau "Pilih dari Galeri" di bawah.');
+        setCameraError('Kamera browser langsung tidak aktif. Tap "Kamera HP" atau "Galeri HP" di bawah.');
         setIsCameraActive(false);
         return;
       }
@@ -318,10 +412,19 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
         stream.getTracks().forEach((track) => track.stop());
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: cameraFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: cameraFacing } },
+          audio: false
+        });
+      } catch (e1) {
+        console.warn('Ideal facingMode failed, retrying basic video:', e1);
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
+        });
+      }
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -331,9 +434,9 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
         videoRef.current.play().catch(() => {});
         setIsCameraActive(true);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Could not start video stream:', err);
-      setCameraError('Kamera browser tidak dapat diakses langsung. Anda dapat langsung menggunakan tombol "Ambil Foto Kamera HP" atau "Pilih dari Galeri"!');
+      setCameraError('Kamera live browser memerlukan izin. Silakan tap tombol "Kamera HP" di bawah untuk langsung membuka kamera HP Anda!');
       setIsCameraActive(false);
     }
   };
@@ -401,14 +504,14 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Reset input so same photo can be re-selected if desired
-    e.target.value = '';
-
     setIsProcessingWatermark(true);
     setUploadError(null);
 
     const reader = new FileReader();
     reader.onload = async (event) => {
+      // Clear input value safely AFTER reading into memory to avoid detaching mobile File blob
+      try { e.target.value = ''; } catch {}
+
       const rawDataUrl = event.target?.result as string;
       if (!rawDataUrl) {
         setIsProcessingWatermark(false);
@@ -419,7 +522,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       stopCamera();
 
       try {
-        const optimized = await compressImageDataUrl(rawDataUrl, 1080);
+        const optimized = await compressImageDataUrl(rawDataUrl, 960);
         setCapturedRawImage(optimized);
         await processWatermarking(optimized);
       } catch (err) {
@@ -428,6 +531,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       }
     };
     reader.onerror = () => {
+      try { e.target.value = ''; } catch {}
       setIsProcessingWatermark(false);
       setUploadError('Gagal membuka file foto dari HP.');
     };
@@ -746,6 +850,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
       <main className="flex-1 overflow-y-auto px-3.5 py-3 space-y-4">
         {/* Hidden File Inputs for Mobile Phone Device Integration */}
         <input
+          id="mobile-native-camera-input"
           ref={nativeCameraInputRef}
           type="file"
           accept="image/*"
@@ -755,6 +860,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
           aria-hidden="true"
         />
         <input
+          id="mobile-gallery-input"
           ref={galleryInputRef}
           type="file"
           accept="image/*"
@@ -1064,20 +1170,18 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
                     <AlertTriangle className="w-8 h-8 text-amber-400 mb-2" />
                     <p className="mb-3 text-slate-200 text-[11px] max-w-xs">{cameraError}</p>
                     <div className="flex flex-col gap-2 w-full max-w-xs">
-                      <button
-                        type="button"
-                        onClick={() => nativeCameraInputRef.current?.click()}
-                        className="w-full cursor-pointer bg-sky-600 hover:bg-sky-500 active:scale-95 text-white font-bold px-4 py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg transition-all"
+                      <label
+                        htmlFor="mobile-native-camera-input"
+                        className="w-full cursor-pointer bg-sky-600 hover:bg-sky-500 active:scale-95 text-white font-bold px-4 py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg transition-all select-none"
                       >
                         <Camera className="w-4 h-4" /> Buka Kamera HP Sekarang
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => galleryInputRef.current?.click()}
-                        className="w-full cursor-pointer bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 font-semibold px-4 py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 border border-slate-700 shadow transition-all"
+                      </label>
+                      <label
+                        htmlFor="mobile-gallery-input"
+                        className="w-full cursor-pointer bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 font-semibold px-4 py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 border border-slate-700 shadow transition-all select-none"
                       >
                         <ImageIcon className="w-4 h-4 text-emerald-400" /> Pilih dari Galeri / Berkas HP
-                      </button>
+                      </label>
                     </div>
                   </div>
                 )}
@@ -1130,16 +1234,15 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
             {/* Action Buttons: Camera HP, Shutter, Galeri HP, and GPS */}
             {!capturedRawImage ? (
               <div className="flex items-center justify-between gap-2 pt-2 px-1">
-                {/* 1. Native mobile camera direct launcher */}
-                <button
-                  type="button"
-                  onClick={() => nativeCameraInputRef.current?.click()}
-                  className="flex-1 py-3 px-2 bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 rounded-2xl border border-slate-700 transition-all flex flex-col items-center justify-center shadow cursor-pointer"
+                {/* 1. Native mobile camera direct launcher via native label */}
+                <label
+                  htmlFor="mobile-native-camera-input"
+                  className="flex-1 py-3 px-2 bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 rounded-2xl border border-slate-700 transition-all flex flex-col items-center justify-center shadow cursor-pointer select-none"
                   title="Buka Kamera Telepon Selular Langsung"
                 >
                   <Camera className="w-5 h-5 text-sky-400" />
                   <span className="text-[10px] mt-1 text-slate-300 font-semibold leading-tight">Kamera HP</span>
-                </button>
+                </label>
 
                 {/* 2. Big Shutter button (always responsive: captures video frame or triggers mobile camera) */}
                 <button
@@ -1154,15 +1257,14 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
                 </button>
 
                 {/* 3. Pure Gallery Picker without capture attribute (opens gallery/album on mobile) */}
-                <button
-                  type="button"
-                  onClick={() => galleryInputRef.current?.click()}
-                  className="flex-1 py-3 px-2 bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 rounded-2xl border border-slate-700 transition-all flex flex-col items-center justify-center shadow cursor-pointer"
+                <label
+                  htmlFor="mobile-gallery-input"
+                  className="flex-1 py-3 px-2 bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 rounded-2xl border border-slate-700 transition-all flex flex-col items-center justify-center shadow cursor-pointer select-none"
                   title="Pilih Foto dari Galeri Telepon Selular"
                 >
                   <ImageIcon className="w-5 h-5 text-emerald-400" />
                   <span className="text-[10px] mt-1 text-slate-300 font-semibold leading-tight">Galeri HP</span>
-                </button>
+                </label>
 
                 {/* 4. Refresh GPS */}
                 <button

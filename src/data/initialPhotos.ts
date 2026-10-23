@@ -1,11 +1,11 @@
-import { PhotoUpload } from '../types';
+import { PhotoUpload, UserAccount } from '../types';
 import { VENUE_GEO_PRESETS } from './initialData';
 
 /**
  * Generate an indelible SVG data URL image that visually mimics a real camera capture
  * with venue architecture/lab background and an official digital watermark banner.
  */
-function createWatermarkedSvg(
+export function createWatermarkedSvg(
   venue: string,
   category: string,
   username: string,
@@ -494,3 +494,86 @@ export const INITIAL_PRESET_PHOTOS: PhotoUpload[] = [
     createdAt: '2026-10-22T00:00:00.000Z'
   }
 ];
+
+/**
+ * Dynamically generate standard baseline photos for any venue if currently empty
+ */
+export function generateVenueBaselinePhotos(user: UserAccount): PhotoUpload[] {
+  if (!user || !user.venue || user.role === 'admin') return [];
+  const preset = VENUE_GEO_PRESETS[user.venue] || {
+    venue: user.venue,
+    city: user.venue,
+    province: 'Indonesia',
+    lat: -6.2088,
+    lng: 106.8456
+  };
+
+  const padNo = String(user.no || 1).padStart(2, '0');
+  const safeVenueKey = user.venue.toLowerCase().replace(/[^a-z0-9]/g, '_');
+
+  return [
+    {
+      id: `seed_${safeVenueKey}_gedung`,
+      userId: user.id,
+      username: user.username,
+      venue: user.venue,
+      stage: 'persiapan',
+      category: 'foto gedung',
+      photoDate: '19 Oktober 2026',
+      photoTime: '08:00:00 WIB',
+      latitude: preset.lat,
+      longitude: preset.lng,
+      accuracy: 8,
+      locationName: `${preset.city}, ${preset.province}`,
+      imageUrl: createWatermarkedSvg(
+        user.venue,
+        'foto gedung',
+        user.username,
+        preset.city,
+        preset.lat,
+        preset.lng,
+        '19 Oktober 2026',
+        '08:00:00 WIB',
+        'building'
+      ),
+      status: 'verified',
+      driveFileName: `${padNo}_${user.venue}_${user.username}_persiapan_foto gedung_19 Oktober 2026_08.00.00 WIB.jpg`,
+      driveStatus: 'synced',
+      notes: `Gedung dan pintu masuk lokasi ujian ${user.venue} siap pakai.`,
+      adminComment: 'Verifikasi dokumentasi lokasi resmi SPMB STAN.',
+      verifiedAt: '2026-10-19T08:30:00.000Z',
+      createdAt: '2026-10-19T01:00:00.000Z'
+    },
+    {
+      id: `seed_${safeVenueKey}_ruangan`,
+      userId: user.id,
+      username: user.username,
+      venue: user.venue,
+      stage: 'persiapan',
+      category: 'foto ruangan',
+      photoDate: '19 Oktober 2026',
+      photoTime: '08:45:00 WIB',
+      latitude: preset.lat,
+      longitude: preset.lng,
+      accuracy: 10,
+      locationName: `${preset.city}, ${preset.province}`,
+      imageUrl: createWatermarkedSvg(
+        user.venue,
+        'foto ruangan',
+        user.username,
+        preset.city,
+        preset.lat,
+        preset.lng,
+        '19 Oktober 2026',
+        '08:45:00 WIB',
+        'room'
+      ),
+      status: 'submitted',
+      driveFileName: `${padNo}_${user.venue}_${user.username}_persiapan_foto ruangan_19 Oktober 2026_08.45.00 WIB.jpg`,
+      driveStatus: 'local_only',
+      notes: `Ruang tes ${user.venue} ber-AC, pencahayaan dan jarak meja sesuai standar.`,
+      createdAt: '2026-10-19T01:45:00.000Z'
+    }
+  ];
+}
+

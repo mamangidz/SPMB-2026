@@ -559,6 +559,7 @@ export default function App() {
             {activeEffectiveUser && (
               <UserMobileApp
                 currentUser={activeEffectiveUser}
+                allPhotos={photos}
                 onLogout={handleLogout}
                 onPhotoUploaded={(newPhoto) => {
                   setPhotos((prev) => [newPhoto, ...prev.filter((p) => p.id !== newPhoto.id)]);

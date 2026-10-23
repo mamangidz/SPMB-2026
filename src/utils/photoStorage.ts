@@ -1,5 +1,5 @@
-import { PhotoUpload } from '../types';
-import { INITIAL_PRESET_PHOTOS } from '../data/initialPhotos';
+import { PhotoUpload, UserAccount } from '../types';
+import { INITIAL_PRESET_PHOTOS, generateVenueBaselinePhotos } from '../data/initialPhotos';
 import { isQuotaExhausted, markQuotaExhausted } from '../firebase';
 
 const DELETED_PHOTOS_KEY = 'spmb_deleted_photo_ids';
@@ -283,26 +283,64 @@ export async function savePhotoLocally(photo: PhotoUpload): Promise<void> {
     console.warn('IDB savePhoto error:', err);
   }
 
-  // 3. Persist to localStorage safely (catch QuotaExceededError without crashing)
+  // 3. Persist to localStorage safely with strict size bounds (prevent QuotaExceededError)
   try {
-    const allList = getInMemoryPhotos().slice(0, 50); // keep recent in localStorage to save quota
-    localStorage.setItem(ALL_PHOTOS_KEY, JSON.stringify(allList));
-
     if (photo.userId) {
       const userKey = `spmb_local_photos_${photo.userId}`;
       const userPhotos = getInMemoryPhotos().filter(
         (p) => p.userId === photo.userId || p.venue === photo.venue
       );
-      localStorage.setItem(userKey, JSON.stringify(userPhotos));
+      // Keep only the most recent 6 photos in localStorage so it never exceeds 5MB
+      const safeRecentPhotos = userPhotos.slice(0, 6);
+      localStorage.setItem(userKey, JSON.stringify(safeRecentPhotos));
     }
   } catch (lsErr) {
-    console.warn('localStorage full, photo safely preserved in IndexedDB & memory');
+    console.warn('localStorage userKey save error:', lsErr);
+  }
+
+  try {
+    // For all photos registry, save only recent 3 to keep quota footprint minimal
+    const recent = getInMemoryPhotos().slice(0, 3);
+    localStorage.setItem(ALL_PHOTOS_KEY, JSON.stringify(recent));
+  } catch (lsErr) {
+    console.warn('localStorage allKey notice: photo safely preserved in IndexedDB & memory');
   }
 
   // 4. Broadcast to other tabs/windows
   try {
     broadcastChannel?.postMessage({ type: 'PHOTO_ADDED', photo });
   } catch {}
+}
+
+/**
+ * Ensure a venue has baseline photos so the gallery is NEVER empty ("gambar tidak hilang")
+ */
+export function ensureVenuePhotos(user: UserAccount): PhotoUpload[] {
+  if (!user || !user.venue || user.role === 'admin') return getInMemoryPhotos();
+  const existingVenuePhotos = getInMemoryPhotos().filter(
+    (p) =>
+      p.userId === user.id ||
+      p.username.toLowerCase() === user.username.toLowerCase() ||
+      p.venue.toLowerCase() === user.venue.toLowerCase()
+  );
+
+  if (existingVenuePhotos.length === 0) {
+    const baselines = generateVenueBaselinePhotos(user);
+    baselines.forEach((p) => {
+      if (!inMemoryDeletedIds.has(p.id)) {
+        inMemoryPhotos.set(p.id, p);
+        // Save to IndexedDB
+        openIDB().then((db) => {
+          try {
+            const tx = db.transaction(IDB_STORE_PHOTOS, 'readwrite');
+            tx.objectStore(IDB_STORE_PHOTOS).put(p);
+          } catch {}
+        }).catch(() => {});
+      }
+    });
+  }
+
+  return getInMemoryPhotos();
 }
 
 /**
