@@ -21,7 +21,9 @@ export async function stampWatermarkOnImage(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    if (typeof imageSource === 'string' && (imageSource.startsWith('http://') || imageSource.startsWith('https://'))) {
+      img.crossOrigin = 'anonymous';
+    }
 
     img.onload = () => {
       try {
@@ -146,7 +148,9 @@ export async function compressImageDataUrl(dataUrl: string, maxDimension = 960):
       return resolve(dataUrl);
     }
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    if (dataUrl.startsWith('http://') || dataUrl.startsWith('https://')) {
+      img.crossOrigin = 'anonymous';
+    }
     img.onload = () => {
       try {
         let width = img.width;

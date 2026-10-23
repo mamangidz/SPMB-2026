@@ -91,6 +91,8 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
 
   // Camera states
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const nativeCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
   const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -305,6 +307,12 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
   const startCamera = async () => {
     setCameraError(null);
     try {
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        setCameraError('Kamera browser langsung tidak aktif. Gunakan tombol "Ambil Foto Kamera HP" atau "Pilih dari Galeri" di bawah.');
+        setIsCameraActive(false);
+        return;
+      }
+
       if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach((track) => track.stop());
@@ -317,12 +325,15 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play().catch(() => {});
+        };
+        videoRef.current.play().catch(() => {});
         setIsCameraActive(true);
       }
     } catch (err) {
       console.warn('Could not start video stream:', err);
-      setCameraError('Kamera tidak dapat diakses langsung. Anda tetap dapat menggunakan tombol "Pilih Foto dari Galeri / Kamera HP".');
+      setCameraError('Kamera browser tidak dapat diakses langsung. Anda dapat langsung menggunakan tombol "Ambil Foto Kamera HP" atau "Pilih dari Galeri"!');
       setIsCameraActive(false);
     }
   };
@@ -351,20 +362,33 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
     return () => stopCamera();
   }, [activeTab, cameraFacing, capturedRawImage]);
 
-  // Capture snapshot from video
+  // Capture snapshot from video with automatic fallback to native mobile camera
   const takeSnapshot = async () => {
-    if (!videoRef.current) return;
-    playCameraShutterSound();
+    // If live video is not active or not ready, immediately trigger the mobile native camera
+    if (!videoRef.current || !isCameraActive) {
+      nativeCameraInputRef.current?.click();
+      return;
+    }
 
     const video = videoRef.current;
+    if (!video.videoWidth || !video.videoHeight) {
+      nativeCameraInputRef.current?.click();
+      return;
+    }
+
+    playCameraShutterSound();
+
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth || 1280;
     canvas.height = video.videoHeight || 720;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      nativeCameraInputRef.current?.click();
+      return;
+    }
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const rawDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    const rawDataUrl = canvas.toDataURL('image/jpeg', 0.88);
     setCapturedRawImage(rawDataUrl);
     stopCamera();
 
@@ -372,24 +396,40 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
     await processWatermarking(rawDataUrl);
   };
 
-  // Handle local file upload (mobile file picker / camera picker)
+  // Handle local file upload (mobile camera picker or phone gallery picker)
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Reset input so same photo can be re-selected if desired
+    e.target.value = '';
+
+    setIsProcessingWatermark(true);
+    setUploadError(null);
+
     const reader = new FileReader();
     reader.onload = async (event) => {
       const rawDataUrl = event.target?.result as string;
+      if (!rawDataUrl) {
+        setIsProcessingWatermark(false);
+        setUploadError('Gagal membaca data foto dari memori telepon selular.');
+        return;
+      }
+      setCapturedRawImage(rawDataUrl);
+      stopCamera();
+
       try {
         const optimized = await compressImageDataUrl(rawDataUrl, 1080);
         setCapturedRawImage(optimized);
-        stopCamera();
         await processWatermarking(optimized);
-      } catch {
-        setCapturedRawImage(rawDataUrl);
-        stopCamera();
+      } catch (err) {
+        console.warn('Compress fallback, proceeding with raw:', err);
         await processWatermarking(rawDataUrl);
       }
+    };
+    reader.onerror = () => {
+      setIsProcessingWatermark(false);
+      setUploadError('Gagal membuka file foto dari HP.');
     };
     reader.readAsDataURL(file);
   };
@@ -512,133 +552,150 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
 
   // Upload to Firestore & Google Drive & trigger notifications
   const handleUploadPhoto = async () => {
-    if (!watermarkedImage) return;
+    const photoToUpload = watermarkedImage || capturedRawImage;
+    if (!photoToUpload) {
+      setUploadError('Silakan ambil foto via kamera HP atau pilih dari galeri terlebih dahulu.');
+      return;
+    }
 
     setIsUploading(true);
     setUploadError(null);
 
-    const now = new Date();
-    const dateFormatted = now.toLocaleDateString('id-ID', {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric'
-    });
-    const timeFormatted = now.toLocaleTimeString('id-ID', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    }) + ' WIB';
-
-    // 1. Generate standardized filename strictly matching the table
-    const driveFileName = generateDriveFileName({
-      no: currentUser.no,
-      venue: currentUser.venue,
-      username: currentUser.username,
-      stage: selectedStage,
-      category: selectedCategory,
-      photoDate: dateFormatted,
-      photoTime: timeFormatted
-    });
-
-    // 2. Strict size compliance: guarantee image base64 is compressed under 480KB (never exceeds Firestore 1MB)
-    let safeImageUrl = watermarkedImage;
     try {
-      safeImageUrl = await compressImageDataUrl(watermarkedImage, 1080);
-    } catch (e) {
-      console.warn('Compress fallback to original:', e);
-    }
+      const now = new Date();
+      const dateFormatted = now.toLocaleDateString('id-ID', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+      });
+      const timeFormatted = now.toLocaleTimeString('id-ID', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      }) + ' WIB';
 
-    let driveResult: { fileId: string; fileName: string; webViewLink: string } | null = null;
+      // 1. Generate standardized filename strictly matching the table
+      const driveFileName = generateDriveFileName({
+        no: currentUser.no,
+        venue: currentUser.venue,
+        username: currentUser.username,
+        stage: selectedStage,
+        category: selectedCategory,
+        photoDate: dateFormatted,
+        photoTime: timeFormatted
+      });
 
-    // 3. Upload to Google Drive if connected
-    if (getDriveAccessToken()) {
+      // 2. Strict size compliance: guarantee image base64 is compressed under 400KB
+      let safeImageUrl = photoToUpload;
       try {
-        driveResult = await uploadPhotoToGoogleDrive({
-          dataUrl: safeImageUrl,
-          fileName: driveFileName,
-          venue: currentUser.venue
-        });
-      } catch (driveErr) {
-        console.warn('Google Drive direct upload skipped or failed:', driveErr);
+        safeImageUrl = await compressImageDataUrl(photoToUpload, 1080);
+      } catch (e) {
+        console.warn('Compress fallback to original:', e);
       }
+
+      let driveResult: { fileId: string; fileName: string; webViewLink: string } | null = null;
+
+      // 3. Upload to Google Drive if connected (with safe 4s timeout so slow cellular data never blocks saving)
+      if (getDriveAccessToken()) {
+        try {
+          const drivePromise = uploadPhotoToGoogleDrive({
+            dataUrl: safeImageUrl,
+            fileName: driveFileName,
+            venue: currentUser.venue
+          });
+          const driveTimeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000));
+          driveResult = await Promise.race([drivePromise, driveTimeout]);
+        } catch (driveErr) {
+          console.warn('Google Drive direct upload skipped or timed out:', driveErr);
+        }
+      }
+
+      // 4. Stable deterministic ID so local cache and cloud doc are in sync
+      const photoId = 'photo_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+
+      const photoPayload: PhotoUpload = {
+        id: photoId,
+        userId: currentUser.id,
+        username: currentUser.username,
+        venue: currentUser.venue,
+        stage: selectedStage,
+        category: selectedCategory,
+        photoDate: dateFormatted,
+        photoTime: timeFormatted,
+        latitude: Number(currentCoords?.latitude ?? -6.2088),
+        longitude: Number(currentCoords?.longitude ?? 106.8456),
+        accuracy: Number(currentCoords?.accuracy ?? 15),
+        locationName: currentCoords?.locationName || currentUser.venue,
+        imageUrl: safeImageUrl,
+        status: 'submitted',
+        driveFileName,
+        driveFileId: driveResult?.fileId || '',
+        driveFileUrl: driveResult?.webViewLink || '',
+        driveStatus: driveResult ? 'synced' : 'local_only',
+        notes: (notes || '').trim(),
+        createdAt: now.toISOString()
+      };
+
+      // 5. Instantly persist to IndexedDB, memory cache & localStorage (GUARANTEE ZERO DATA LOSS)
+      try {
+        await savePhotoLocally(photoPayload);
+      } catch (persistErr) {
+        console.warn('Local persist warning:', persistErr);
+      }
+
+      setMyPhotos((prev) => {
+        const filtered = prev.filter((p) => p.id !== photoPayload.id);
+        return [photoPayload, ...filtered];
+      });
+
+      // 6. Notify parent state immediately (instant rendering in Admin Dashboard)
+      if (onPhotoUploaded) {
+        onPhotoUploaded(photoPayload);
+      }
+
+      // 7. Non-blocking cloud sync with safe timeout (never blocks UI even if Firestore quota exceeded)
+      const cleanData = sanitizeFirestorePhoto(photoPayload);
+      safeFirestoreWrite(() => setDoc(doc(db, 'photos', photoId), cleanData), 3000, 'Photo Cloud Save');
+
+      // Trigger Push Notification and Activity Log (non-blocking)
+      const notifTitle = `Foto Baru: ${currentUser.venue}`;
+      const notifMsg = `${currentUser.username} mengunggah foto [${selectedStage === 'persiapan' ? 'Tahap 1' : 'Tahap 2'}: ${selectedCategory}]${
+        driveResult ? ' dan tersimpan di Google Drive' : ''
+      } (Nama File: ${driveFileName})`;
+
+      sendSystemNotification({
+        type: 'upload',
+        title: notifTitle,
+        message: notifMsg,
+        venue: currentUser.venue,
+        username: currentUser.username
+      }).catch(console.warn);
+
+      logActivity({
+        action: 'UPLOAD_FOTO',
+        username: currentUser.username,
+        venue: currentUser.venue,
+        details: `Unggah foto ${selectedStage} - ${selectedCategory} (File: ${driveFileName}${
+          driveResult ? ' [Google Drive Synced]' : ''
+        })`
+      }).catch(console.warn);
+
+      playNotificationSound();
+      setUploadSuccess(true);
+      setUploadError(null);
+      setTimeout(() => {
+        setUploadSuccess(false);
+        setCapturedRawImage(null);
+        setWatermarkedImage(null);
+        setNotes('');
+        setActiveTab('history');
+      }, 1200);
+    } catch (err: any) {
+      console.error('Upload photo error:', err);
+      setUploadError(`Gagal menyimpan foto: ${err?.message || 'Terjadi kesalahan sistem'}. Silakan coba lagi.`);
+    } finally {
+      setIsUploading(false);
     }
-
-    // 4. Stable deterministic ID so local cache and cloud doc are in sync
-    const photoId = 'photo_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
-
-    const photoPayload: PhotoUpload = {
-      id: photoId,
-      userId: currentUser.id,
-      username: currentUser.username,
-      venue: currentUser.venue,
-      stage: selectedStage,
-      category: selectedCategory,
-      photoDate: dateFormatted,
-      photoTime: timeFormatted,
-      latitude: Number(currentCoords?.latitude ?? -6.2088),
-      longitude: Number(currentCoords?.longitude ?? 106.8456),
-      accuracy: Number(currentCoords?.accuracy ?? 15),
-      locationName: currentCoords?.locationName || currentUser.venue,
-      imageUrl: safeImageUrl,
-      status: 'submitted',
-      driveFileName,
-      driveFileId: driveResult?.fileId || '',
-      driveFileUrl: driveResult?.webViewLink || '',
-      driveStatus: driveResult ? 'synced' : 'local_only',
-      notes: (notes || '').trim(),
-      createdAt: now.toISOString()
-    };
-
-    // 5. Instantly persist to IndexedDB, memory cache & localStorage (GUARANTEE ZERO DATA LOSS)
-    await savePhotoLocally(photoPayload);
-
-    setMyPhotos((prev) => {
-      const filtered = prev.filter((p) => p.id !== photoPayload.id);
-      return [photoPayload, ...filtered];
-    });
-
-    // 6. Notify parent state immediately (instant rendering in Admin Dashboard)
-    if (onPhotoUploaded) {
-      onPhotoUploaded(photoPayload);
-    }
-
-    // 7. Non-blocking cloud sync with safe timeout (never blocks UI even if Firestore quota exceeded)
-    const cleanData = sanitizeFirestorePhoto(photoPayload);
-    safeFirestoreWrite(() => setDoc(doc(db, 'photos', photoId), cleanData), 3000, 'Photo Cloud Save');
-
-    // Trigger Push Notification and Activity Log (non-blocking)
-    const notifTitle = `Foto Baru: ${currentUser.venue}`;
-    const notifMsg = `${currentUser.username} mengunggah foto [${selectedStage === 'persiapan' ? 'Tahap 1' : 'Tahap 2'}: ${selectedCategory}]${
-      driveResult ? ' dan tersimpan di Google Drive' : ''
-    } (Nama File: ${driveFileName})`;
-
-    sendSystemNotification({
-      type: 'upload',
-      title: notifTitle,
-      message: notifMsg,
-      venue: currentUser.venue,
-      username: currentUser.username
-    }).catch(console.warn);
-
-    logActivity({
-      action: 'UPLOAD_FOTO',
-      username: currentUser.username,
-      venue: currentUser.venue,
-      details: `Unggah foto ${selectedStage} - ${selectedCategory} (File: ${driveFileName}${
-        driveResult ? ' [Google Drive Synced]' : ''
-      })`
-    }).catch(console.warn);
-
-    playNotificationSound();
-    setUploadSuccess(true);
-    setUploadError(null);
-    setTimeout(() => {
-      setUploadSuccess(false);
-      setCapturedRawImage(null);
-      setWatermarkedImage(null);
-      setNotes('');
-      setActiveTab('history');
-    }, 1500);
   };
 
   // Helper to check if a category is already uploaded
@@ -687,6 +744,25 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
 
       {/* Main Content Area */}
       <main className="flex-1 overflow-y-auto px-3.5 py-3 space-y-4">
+        {/* Hidden File Inputs for Mobile Phone Device Integration */}
+        <input
+          ref={nativeCameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={handleFileChange}
+          className="hidden"
+          aria-hidden="true"
+        />
+        <input
+          ref={galleryInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleFileChange}
+          className="hidden"
+          aria-hidden="true"
+        />
+
         {/* GPS Location Pill Badge */}
         <section aria-label="Status Lokasi GPS" className="bg-slate-800/80 rounded-xl p-2.5 border border-slate-700/60 flex items-center justify-between text-xs">
           <div className="flex items-center gap-2 min-w-0">
@@ -984,19 +1060,25 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
                 </div>
 
                 {cameraError && (
-                  <div className="absolute inset-0 bg-slate-950/90 p-4 flex flex-col items-center justify-center text-center text-xs text-amber-300">
+                  <div className="absolute inset-0 bg-slate-950/92 p-4 flex flex-col items-center justify-center text-center text-xs text-amber-300 z-10">
                     <AlertTriangle className="w-8 h-8 text-amber-400 mb-2" />
-                    <p className="mb-3">{cameraError}</p>
-                    <label className="cursor-pointer bg-sky-600 hover:bg-sky-500 text-white font-semibold px-4 py-2 rounded-xl text-xs flex items-center gap-2">
-                      <Upload className="w-4 h-4" /> Pilih dari Galeri / Kamera
-                      <input
-                        type="file"
-                        accept="image/*"
-                        capture="environment"
-                        onChange={handleFileChange}
-                        className="hidden"
-                      />
-                    </label>
+                    <p className="mb-3 text-slate-200 text-[11px] max-w-xs">{cameraError}</p>
+                    <div className="flex flex-col gap-2 w-full max-w-xs">
+                      <button
+                        type="button"
+                        onClick={() => nativeCameraInputRef.current?.click()}
+                        className="w-full cursor-pointer bg-sky-600 hover:bg-sky-500 active:scale-95 text-white font-bold px-4 py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg transition-all"
+                      >
+                        <Camera className="w-4 h-4" /> Buka Kamera HP Sekarang
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => galleryInputRef.current?.click()}
+                        className="w-full cursor-pointer bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 font-semibold px-4 py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 border border-slate-700 shadow transition-all"
+                      >
+                        <ImageIcon className="w-4 h-4 text-emerald-400" /> Pilih dari Galeri / Berkas HP
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1036,7 +1118,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
                       setWatermarkedImage(null);
                       startCamera();
                     }}
-                    className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 py-1 px-2 rounded-lg bg-rose-500/10 border border-rose-500/20"
+                    className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 py-1 px-2 rounded-lg bg-rose-500/10 border border-rose-500/20 cursor-pointer"
                   >
                     <RotateCcw className="w-3.5 h-3.5" /> Foto Ulang
                   </button>
@@ -1045,41 +1127,52 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, onLog
               </div>
             )}
 
-            {/* Action Buttons: Shutter vs Upload */}
+            {/* Action Buttons: Camera HP, Shutter, Galeri HP, and GPS */}
             {!capturedRawImage ? (
-              <div className="flex items-center justify-around pt-2">
-                {/* File picker */}
-                <label className="cursor-pointer p-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-2xl border border-slate-700 transition-colors flex flex-col items-center justify-center">
-                  <ImageIcon className="w-5 h-5 text-sky-400" />
-                  <span className="text-[9px] mt-1 text-slate-400 font-medium">Galeri</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    onChange={handleFileChange}
-                    className="hidden"
-                  />
-                </label>
+              <div className="flex items-center justify-between gap-2 pt-2 px-1">
+                {/* 1. Native mobile camera direct launcher */}
+                <button
+                  type="button"
+                  onClick={() => nativeCameraInputRef.current?.click()}
+                  className="flex-1 py-3 px-2 bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 rounded-2xl border border-slate-700 transition-all flex flex-col items-center justify-center shadow cursor-pointer"
+                  title="Buka Kamera Telepon Selular Langsung"
+                >
+                  <Camera className="w-5 h-5 text-sky-400" />
+                  <span className="text-[10px] mt-1 text-slate-300 font-semibold leading-tight">Kamera HP</span>
+                </button>
 
-                {/* Big Shutter button */}
+                {/* 2. Big Shutter button (always responsive: captures video frame or triggers mobile camera) */}
                 <button
                   type="button"
                   onClick={takeSnapshot}
-                  disabled={!isCameraActive}
-                  className="w-16 h-16 rounded-full bg-white p-1 ring-4 ring-sky-500/30 active:scale-95 transition-all shadow-xl flex items-center justify-center disabled:opacity-50"
-                  title="Ambil Foto"
+                  className="w-16 h-16 rounded-full bg-white p-1 ring-4 ring-sky-500/30 active:scale-90 transition-all shadow-xl flex items-center justify-center cursor-pointer shrink-0"
+                  title={isCameraActive ? 'Jepret Foto Langsung' : 'Ambil Foto via Kamera HP'}
                 >
-                  <div className="w-full h-full rounded-full border-2 border-slate-950 bg-gradient-to-tr from-sky-500 to-indigo-600"></div>
+                  <div className="w-full h-full rounded-full border-2 border-slate-950 bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center">
+                    <Camera className="w-6 h-6 text-white drop-shadow" />
+                  </div>
                 </button>
 
-                {/* Location trigger */}
+                {/* 3. Pure Gallery Picker without capture attribute (opens gallery/album on mobile) */}
+                <button
+                  type="button"
+                  onClick={() => galleryInputRef.current?.click()}
+                  className="flex-1 py-3 px-2 bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 rounded-2xl border border-slate-700 transition-all flex flex-col items-center justify-center shadow cursor-pointer"
+                  title="Pilih Foto dari Galeri Telepon Selular"
+                >
+                  <ImageIcon className="w-5 h-5 text-emerald-400" />
+                  <span className="text-[10px] mt-1 text-slate-300 font-semibold leading-tight">Galeri HP</span>
+                </button>
+
+                {/* 4. Refresh GPS */}
                 <button
                   type="button"
                   onClick={refreshLocation}
-                  className="p-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-2xl border border-slate-700 transition-colors flex flex-col items-center justify-center"
+                  className="py-3 px-3 bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-300 rounded-2xl border border-slate-700 transition-all flex flex-col items-center justify-center shadow cursor-pointer shrink-0"
+                  title="Segarkan Koordinat GPS"
                 >
-                  <MapPin className="w-5 h-5 text-emerald-400" />
-                  <span className="text-[9px] mt-1 text-slate-400 font-medium">GPS</span>
+                  <MapPin className="w-5 h-5 text-amber-400" />
+                  <span className="text-[10px] mt-1 text-slate-400 font-semibold leading-tight">GPS</span>
                 </button>
               </div>
             ) : (
