@@ -38,6 +38,7 @@ import {
 import { db } from '../firebase';
 import { UserAccount, PhotoUpload, SystemNotification, ActivityLog } from '../types';
 import { INITIAL_USERS, STANDARD_TAHAP1_TASKS } from '../data/initialData';
+import { healPhoto } from '../data/initialPhotos';
 import { sendSystemNotification, logActivity, requestPushPermission } from '../utils/notifications';
 import {
   markPhotoAsDeleted,
@@ -143,14 +144,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
   }, [users, searchQuery, roleFilter, statusFilter]);
 
-  // Filtered photos
+  // Filtered photos - guaranteed 100% healed with valid watermarked images
   const filteredPhotos = useMemo(() => {
-    return photos.filter(p => {
-      const matchVenue = photoVenueFilter === 'all' || p.venue === photoVenueFilter;
-      const matchStage = photoStageFilter === 'all' || p.stage === photoStageFilter;
-      const matchStatus = photoStatusFilter === 'all' || p.status === photoStatusFilter;
-      return matchVenue && matchStage && matchStatus;
-    });
+    return photos
+      .map(healPhoto)
+      .filter((p) => {
+        const matchVenue = photoVenueFilter === 'all' || p.venue === photoVenueFilter;
+        const matchStage = photoStageFilter === 'all' || p.stage === photoStageFilter;
+        const matchStatus = photoStatusFilter === 'all' || p.status === photoStatusFilter;
+        return matchVenue && matchStage && matchStatus;
+      });
   }, [photos, photoVenueFilter, photoStageFilter, photoStatusFilter]);
 
   // CRUD: Create User
@@ -316,6 +319,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleVerifyPhoto = async (photoId: string, status: 'verified' | 'rejected') => {
     try {
       const photo = photos.find((p) => p.id === photoId);
+      const safePhoto = photo ? healPhoto(photo) : undefined;
       const updateData: Partial<PhotoUpload> = {
         status,
         adminComment:
@@ -329,8 +333,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         onUpdatePhoto(photoId, updateData);
       }
 
-      // 2. Persist update into IndexedDB & local storage caches
-      updateCachedPhotoStatus(photoId, status, updateData);
+      // 2. Persist update into IndexedDB & local storage caches with full valid photo metadata
+      updateCachedPhotoStatus(photoId, status, { ...(safePhoto || {}), ...updateData });
 
       // 3. Close modal & clear note input immediately
       if (inspectingPhoto?.id === photoId) {

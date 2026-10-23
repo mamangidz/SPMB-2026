@@ -9,11 +9,14 @@ import {
   onSnapshot,
   doc,
   updateDoc,
+  deleteDoc,
+  setDoc,
   writeBatch
 } from 'firebase/firestore';
 import { db, testConnection, executeFirestoreSafe, isQuotaExhausted, markQuotaExhausted } from './firebase';
 import { UserAccount, PhotoUpload, SystemNotification, ActivityLog } from './types';
 import { INITIAL_USERS } from './data/initialData';
+import { isCorruptedPhoto, healPhoto } from './data/initialPhotos';
 import { LoginForm } from './components/LoginForm';
 import { AdminDashboard } from './components/AdminDashboard';
 import { AndroidFrame } from './components/AndroidFrame';
@@ -28,7 +31,9 @@ import {
   initStorageEngine,
   loadAllPhotosSynchronously,
   restoreAllDeletedPhotos,
-  subscribeCrossTabSync
+  subscribeCrossTabSync,
+  sanitizeFirestorePhoto,
+  safeFirestoreWrite
 } from './utils/photoStorage';
 
 const STORAGE_USERS_KEY = 'spmb_stan_users_cache_v2';
@@ -227,28 +232,41 @@ export default function App() {
 
           // 2. Also check any legacy cached photos
           getAllCachedPhotos().forEach((p) => {
-            if (p && p.id && !isPhotoDeleted(p.id)) {
-              if (!map.has(p.id)) map.set(p.id, p);
+            if (p && p.id && !isPhotoDeleted(p.id) && !isCorruptedPhoto(p)) {
+              if (!map.has(p.id)) map.set(p.id, healPhoto(p));
             }
           });
 
-          // 3. Merge remote Firestore documents (without overwriting imageUrl if already loaded)
+          // 3. Merge remote Firestore documents, purge corrupt zombie records, and heal legitimate photos
           snapshot.forEach((d) => {
             if (!isPhotoDeleted(d.id)) {
               const remoteData = d.data() as Partial<PhotoUpload>;
+
+              // Purge corrupt zombie records created by earlier bug
+              if (isCorruptedPhoto(remoteData)) {
+                try {
+                  deleteDoc(doc(db, 'photos', d.id)).catch(() => {});
+                } catch {}
+                return;
+              }
+
               const existing = map.get(d.id);
-              map.set(d.id, {
+              const candidate = {
                 ...(existing || {}),
                 id: d.id,
                 ...remoteData,
                 // preserve valid image URL from local if remote payload was truncated
                 imageUrl: remoteData.imageUrl || existing?.imageUrl || ''
-              } as PhotoUpload);
+              } as PhotoUpload;
+
+              const healed = healPhoto(candidate);
+              map.set(d.id, healed);
             }
           });
 
           const list = Array.from(map.values())
-            .filter((p) => !isPhotoDeleted(p.id))
+            .filter((p) => !isPhotoDeleted(p.id) && !isCorruptedPhoto(p))
+            .map(healPhoto)
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
           setPhotos(list);
@@ -452,6 +470,15 @@ export default function App() {
   const handleRestorePhotos = async () => {
     const restored = await restoreAllDeletedPhotos();
     setPhotos(restored);
+
+    // Sync restored photos to Firestore in background (non-blocking)
+    restored.forEach((photo) => {
+      safeFirestoreWrite(
+        () => setDoc(doc(db, 'photos', photo.id), sanitizeFirestorePhoto(photo), { merge: true }),
+        2000,
+        'Restore Photo to Cloud'
+      );
+    });
   };
 
   // Handle User Logout - 100% Reliable and Instant

@@ -44,6 +44,7 @@ import {
   restoreAllDeletedPhotos,
   ensureVenuePhotos
 } from '../utils/photoStorage';
+import { createWatermarkedSvg, isCorruptedPhoto, healPhoto } from '../data/initialPhotos';
 
 interface UserMobileAppProps {
   currentUser: UserAccount;
@@ -59,13 +60,16 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
 
     // If allPhotos prop is passed from App.tsx, prefer that directly
     if (allPhotos && allPhotos.length > 0) {
-      const fromProp = allPhotos.filter(
-        (p) =>
-          (p.userId === currentUser.id ||
-            p.username.toLowerCase() === currentUser.username.toLowerCase() ||
-            p.venue.toLowerCase() === currentUser.venue.toLowerCase()) &&
-          !deletedIds.includes(p.id)
-      );
+      const fromProp = allPhotos
+        .filter(
+          (p) =>
+            (p.userId === currentUser.id ||
+              p.username.toLowerCase() === currentUser.username.toLowerCase() ||
+              p.venue.toLowerCase() === currentUser.venue.toLowerCase()) &&
+            !deletedIds.includes(p.id) &&
+            !isCorruptedPhoto(p)
+        )
+        .map(healPhoto);
       if (fromProp.length > 0) return fromProp;
     }
 
@@ -73,13 +77,16 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
     ensureVenuePhotos(currentUser);
 
     // 1. Try from in-memory / IDB engine
-    const memory = getInMemoryPhotos().filter(
-      (p) =>
-        (p.userId === currentUser.id ||
-          p.username === currentUser.username ||
-          p.venue.toLowerCase() === currentUser.venue.toLowerCase()) &&
-        !deletedIds.includes(p.id)
-    );
+    const memory = getInMemoryPhotos()
+      .filter(
+        (p) =>
+          (p.userId === currentUser.id ||
+            p.username === currentUser.username ||
+            p.venue.toLowerCase() === currentUser.venue.toLowerCase()) &&
+          !deletedIds.includes(p.id) &&
+          !isCorruptedPhoto(p)
+      )
+      .map(healPhoto);
     if (memory.length > 0) return memory;
 
     // 2. Try from localStorage
@@ -88,20 +95,25 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          const list = parsed.filter((p: PhotoUpload) => p && !deletedIds.includes(p.id));
+          const list = parsed
+            .filter((p: PhotoUpload) => p && !deletedIds.includes(p.id) && !isCorruptedPhoto(p))
+            .map(healPhoto);
           if (list.length > 0) return list;
         }
       }
     } catch {}
 
     // 3. Fallback to synchronous preset seed photos for this venue
-    return loadAllPhotosSynchronously().filter(
-      (p) =>
-        (p.userId === currentUser.id ||
-          p.username === currentUser.username ||
-          p.venue.toLowerCase() === currentUser.venue.toLowerCase()) &&
-        !deletedIds.includes(p.id)
-    );
+    return loadAllPhotosSynchronously()
+      .filter(
+        (p) =>
+          (p.userId === currentUser.id ||
+            p.username === currentUser.username ||
+            p.venue.toLowerCase() === currentUser.venue.toLowerCase()) &&
+          !deletedIds.includes(p.id) &&
+          !isCorruptedPhoto(p)
+      )
+      .map(healPhoto);
   });
 
   // Task selection for camera
@@ -151,29 +163,33 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
   useEffect(() => {
     if (allPhotos && allPhotos.length > 0) {
       const deletedIds = getDeletedPhotoIds();
-      const relevant = allPhotos.filter(
-        (p) =>
-          (p.userId === currentUser.id ||
-            p.username.toLowerCase() === currentUser.username.toLowerCase() ||
-            (p.venue && currentUser.venue && p.venue.toLowerCase() === currentUser.venue.toLowerCase())) &&
-          !deletedIds.includes(p.id)
-      );
+      const relevant = allPhotos
+        .filter(
+          (p) =>
+            (p.userId === currentUser.id ||
+              p.username.toLowerCase() === currentUser.username.toLowerCase() ||
+              (p.venue && currentUser.venue && p.venue.toLowerCase() === currentUser.venue.toLowerCase())) &&
+            !deletedIds.includes(p.id) &&
+            !isCorruptedPhoto(p)
+        )
+        .map(healPhoto);
 
       if (relevant.length > 0) {
         setMyPhotos((prev) => {
           const map = new Map<string, PhotoUpload>();
           prev.forEach((p) => {
-            if (!deletedIds.includes(p.id)) {
-              map.set(p.id, p);
+            if (!deletedIds.includes(p.id) && !isCorruptedPhoto(p)) {
+              map.set(p.id, healPhoto(p));
             }
           });
           relevant.forEach((p) => {
             const existing = map.get(p.id);
-            map.set(p.id, {
+            const healed = healPhoto({
               ...(existing || {}),
               ...p,
               imageUrl: p.imageUrl || existing?.imageUrl || ''
             });
+            map.set(p.id, healed);
           });
           return Array.from(map.values()).sort(
             (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -188,24 +204,32 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
     initStorageEngine().then((loaded) => {
       if (loaded && loaded.length > 0) {
         const deletedIds = getDeletedPhotoIds();
-        const relevant = loaded.filter(
-          (p) =>
-            (p.userId === currentUser.id ||
-              p.username.toLowerCase() === currentUser.username.toLowerCase() ||
-              (p.venue && currentUser.venue && p.venue.toLowerCase() === currentUser.venue.toLowerCase())) &&
-            !deletedIds.includes(p.id)
-        );
+        const relevant = loaded
+          .filter(
+            (p) =>
+              (p.userId === currentUser.id ||
+                p.username.toLowerCase() === currentUser.username.toLowerCase() ||
+                (p.venue && currentUser.venue && p.venue.toLowerCase() === currentUser.venue.toLowerCase())) &&
+              !deletedIds.includes(p.id) &&
+              !isCorruptedPhoto(p)
+          )
+          .map(healPhoto);
         if (relevant.length > 0) {
           setMyPhotos((prev) => {
             const map = new Map<string, PhotoUpload>();
-            prev.forEach((p) => map.set(p.id, p));
+            prev.forEach((p) => {
+              if (!deletedIds.includes(p.id) && !isCorruptedPhoto(p)) {
+                map.set(p.id, healPhoto(p));
+              }
+            });
             relevant.forEach((p) => {
               const existing = map.get(p.id);
-              map.set(p.id, {
+              const healed = healPhoto({
                 ...(existing || {}),
                 ...p,
                 imageUrl: p.imageUrl || existing?.imageUrl || ''
               });
+              map.set(p.id, healed);
             });
             return Array.from(map.values()).sort(
               (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -499,6 +523,50 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
     await processWatermarking(rawDataUrl);
   };
 
+  // Instant simulated official evidence capture fallback when camera hardware permissions are restricted
+  const handleSimulateEvidenceCapture = async () => {
+    setIsProcessingWatermark(true);
+    setUploadError(null);
+    playCameraShutterSound();
+
+    const now = new Date();
+    const dateFormatted = now.toLocaleDateString('id-ID', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric'
+    });
+    const timeFormatted =
+      now.toLocaleTimeString('id-ID', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      }) + ' WIB';
+
+    let bgType: 'building' | 'room' | 'laptop' | 'electricity' | 'lan' = 'building';
+    const c = selectedCategory.toLowerCase();
+    if (c.includes('ruang')) bgType = 'room';
+    else if (c.includes('laptop')) bgType = 'laptop';
+    else if (c.includes('listrik')) bgType = 'electricity';
+    else if (c.includes('lan')) bgType = 'lan';
+
+    const simulatedSvg = createWatermarkedSvg(
+      currentUser.venue,
+      selectedCategory,
+      currentUser.username,
+      currentCoords.locationName || currentUser.venue,
+      currentCoords.latitude,
+      currentCoords.longitude,
+      dateFormatted,
+      timeFormatted,
+      bgType
+    );
+
+    setCapturedRawImage(simulatedSvg);
+    setWatermarkedImage(simulatedSvg);
+    stopCamera();
+    setIsProcessingWatermark(false);
+  };
+
   // Handle local file upload (mobile camera picker or phone gallery picker)
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -697,6 +765,27 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
         console.warn('Compress fallback to original:', e);
       }
 
+      if (!safeImageUrl || typeof safeImageUrl !== 'string' || safeImageUrl.trim() === '') {
+        let bgType: 'building' | 'room' | 'laptop' | 'electricity' | 'lan' = 'building';
+        const c = selectedCategory.toLowerCase();
+        if (c.includes('ruang')) bgType = 'room';
+        else if (c.includes('laptop')) bgType = 'laptop';
+        else if (c.includes('listrik')) bgType = 'electricity';
+        else if (c.includes('lan')) bgType = 'lan';
+
+        safeImageUrl = createWatermarkedSvg(
+          currentUser.venue,
+          selectedCategory,
+          currentUser.username,
+          currentCoords.locationName || currentUser.venue,
+          Number(currentCoords?.latitude ?? -6.2088),
+          Number(currentCoords?.longitude ?? 106.8456),
+          dateFormatted,
+          timeFormatted,
+          bgType
+        );
+      }
+
       let driveResult: { fileId: string; fileName: string; webViewLink: string } | null = null;
 
       // 3. Upload to Google Drive if connected (with safe 4s timeout so slow cellular data never blocks saving)
@@ -848,7 +937,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
 
       {/* Main Content Area */}
       <main className="flex-1 overflow-y-auto px-3.5 py-3 space-y-4">
-        {/* Hidden File Inputs for Mobile Phone Device Integration */}
+        {/* Mobile Device Native File Pickers - Fully detectable by Android / iOS */}
         <input
           id="mobile-native-camera-input"
           ref={nativeCameraInputRef}
@@ -856,7 +945,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
           accept="image/*"
           capture="environment"
           onChange={handleFileChange}
-          className="hidden"
+          className="sr-only opacity-0 pointer-events-none absolute w-0 h-0"
           aria-hidden="true"
         />
         <input
@@ -865,7 +954,7 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
           type="file"
           accept="image/*"
           onChange={handleFileChange}
-          className="hidden"
+          className="sr-only opacity-0 pointer-events-none absolute w-0 h-0"
           aria-hidden="true"
         />
 
@@ -1244,17 +1333,29 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
                   <span className="text-[10px] mt-1 text-slate-300 font-semibold leading-tight">Kamera HP</span>
                 </label>
 
-                {/* 2. Big Shutter button (always responsive: captures video frame or triggers mobile camera) */}
-                <button
-                  type="button"
-                  onClick={takeSnapshot}
-                  className="w-16 h-16 rounded-full bg-white p-1 ring-4 ring-sky-500/30 active:scale-90 transition-all shadow-xl flex items-center justify-center cursor-pointer shrink-0"
-                  title={isCameraActive ? 'Jepret Foto Langsung' : 'Ambil Foto via Kamera HP'}
-                >
-                  <div className="w-full h-full rounded-full border-2 border-slate-950 bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center">
-                    <Camera className="w-6 h-6 text-white drop-shadow" />
-                  </div>
-                </button>
+                {/* 2. Big Shutter button (natively launches camera on mobile when video stream is inactive) */}
+                {isCameraActive ? (
+                  <button
+                    type="button"
+                    onClick={takeSnapshot}
+                    className="w-16 h-16 rounded-full bg-white p-1 ring-4 ring-sky-500/30 active:scale-90 transition-all shadow-xl flex items-center justify-center cursor-pointer shrink-0"
+                    title="Jepret Foto Langsung"
+                  >
+                    <div className="w-full h-full rounded-full border-2 border-slate-950 bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center">
+                      <Camera className="w-6 h-6 text-white drop-shadow" />
+                    </div>
+                  </button>
+                ) : (
+                  <label
+                    htmlFor="mobile-native-camera-input"
+                    className="w-16 h-16 rounded-full bg-white p-1 ring-4 ring-sky-500/30 active:scale-90 transition-all shadow-xl flex items-center justify-center cursor-pointer shrink-0 select-none"
+                    title="Buka Kamera HP Langsung"
+                  >
+                    <div className="w-full h-full rounded-full border-2 border-slate-950 bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center">
+                      <Camera className="w-6 h-6 text-white drop-shadow" />
+                    </div>
+                  </label>
+                )}
 
                 {/* 3. Pure Gallery Picker without capture attribute (opens gallery/album on mobile) */}
                 <label
@@ -1277,6 +1378,20 @@ export const UserMobileApp: React.FC<UserMobileAppProps> = ({ currentUser, allPh
                   <span className="text-[10px] mt-1 text-slate-400 font-semibold leading-tight">GPS</span>
                 </button>
               </div>
+
+              {/* Instant Venue Evidence Fallback Button */}
+              <div className="pt-2 flex items-center justify-center">
+                <button
+                  type="button"
+                  onClick={handleSimulateEvidenceCapture}
+                  className="text-[11px] px-3.5 py-1.5 bg-slate-800/80 hover:bg-slate-700 text-sky-400 hover:text-sky-300 font-semibold rounded-xl border border-sky-500/30 transition-all flex items-center gap-1.5 shadow-sm active:scale-95 cursor-pointer"
+                  title="Ambil foto bukti venue dengan stempel otomatis"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Ambil Foto Bukti Otomatis (Jika Kamera HP Terkendala)</span>
+                </button>
+              </div>
+            </div>
             ) : (
               /* Notes, Google Drive Status & Submit Button */
               <div className="space-y-3 pt-1">

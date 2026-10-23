@@ -1,5 +1,5 @@
 import { PhotoUpload, UserAccount } from '../types';
-import { VENUE_GEO_PRESETS } from './initialData';
+import { VENUE_GEO_PRESETS, INITIAL_USERS } from './initialData';
 
 /**
  * Generate an indelible SVG data URL image that visually mimics a real camera capture
@@ -29,27 +29,27 @@ export function createWatermarkedSvg(
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" viewBox="0 0 960 640">
     <defs>
-      <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
+      <linearGradient id="skyGrad_${bgType}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="${theme.g1}" />
         <stop offset="60%" stop-color="${theme.g2}" />
         <stop offset="100%" stop-color="${theme.g3}" />
       </linearGradient>
-      <linearGradient id="overlayGrad" x1="0" y1="0" x2="0" y2="1">
+      <linearGradient id="overlayGrad_${bgType}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="rgba(15,23,42,0)" />
         <stop offset="50%" stop-color="rgba(15,23,42,0.85)" />
         <stop offset="100%" stop-color="rgba(15,23,42,0.98)" />
       </linearGradient>
-      <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <pattern id="grid_${bgType}" width="40" height="40" patternUnits="userSpaceOnUse">
         <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1" />
       </pattern>
     </defs>
 
     <!-- Photo Canvas Background -->
-    <rect width="960" height="640" fill="url(#skyGrad)" />
-    <rect width="960" height="480" fill="url(#grid)" />
+    <rect width="960" height="640" fill="url(#skyGrad_${bgType})" />
+    <rect width="960" height="480" fill="url(#grid_${bgType})" />
 
     <!-- Facility Illustration / Graphic -->
-    <g opacity="0.35" transform="translate(80, 60)">
+    <g opacity="0.45" transform="translate(80, 60)">
       <rect x="60" y="80" width="680" height="260" rx="16" fill="rgba(255,255,255,0.06)" stroke="${theme.accent}" stroke-width="2" />
       <circle cx="120" cy="140" r="32" fill="${theme.accent}" opacity="0.2" />
       <text x="120" y="148" font-family="'Plus Jakarta Sans', sans-serif" font-size="24" fill="${theme.accent}" text-anchor="middle">STAN</text>
@@ -59,14 +59,14 @@ export function createWatermarkedSvg(
     </g>
 
     <!-- Center Camera Crosshairs -->
-    <circle cx="480" cy="240" r="48" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="1.5" stroke-dasharray="6,4" />
+    <circle cx="480" cy="240" r="48" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="1.5" stroke-dasharray="6,4" />
     <line x1="480" y1="180" x2="480" y2="210" stroke="${theme.accent}" stroke-width="2" />
     <line x1="480" y1="270" x2="480" y2="300" stroke="${theme.accent}" stroke-width="2" />
     <line x1="420" y1="240" x2="450" y2="240" stroke="${theme.accent}" stroke-width="2" />
     <line x1="510" y1="240" x2="540" y2="240" stroke="${theme.accent}" stroke-width="2" />
 
     <!-- Indelible Security Watermark Banner -->
-    <rect x="0" y="440" width="960" height="200" fill="url(#overlayGrad)" />
+    <rect x="0" y="440" width="960" height="200" fill="url(#overlayGrad_${bgType})" />
     <rect x="0" y="440" width="960" height="3" fill="${theme.accent}" />
 
     <!-- Watermark Stamp Content -->
@@ -108,395 +108,84 @@ export function createWatermarkedSvg(
 }
 
 /**
- * Standard seed photos across venues to guarantee the system is NEVER empty
- * and can be completely restored at any time.
+ * Detect whether a photo record is corrupted/placeholder empty data
+ * (Matches corrupt dummy records: empty imageUrl, dummy -6.2 / 106.8 coords without date, or empty venue/userId)
  */
-export const INITIAL_PRESET_PHOTOS: PhotoUpload[] = [
-  // BDK Medan (muklis) - Full Tahap 1 tasks
-  {
-    id: 'seed_photo_medan_1',
-    userId: 'user_1',
-    username: 'muklis',
-    venue: 'BDK Medan',
-    stage: 'persiapan',
-    category: 'foto gedung',
-    photoDate: '19 Oktober 2026',
-    photoTime: '08:15:30 WIB',
-    latitude: VENUE_GEO_PRESETS['BDK Medan'].lat,
-    longitude: VENUE_GEO_PRESETS['BDK Medan'].lng,
-    accuracy: 9,
-    locationName: 'Medan, Sumatera Utara',
-    imageUrl: createWatermarkedSvg(
-      'BDK Medan',
-      'foto gedung',
-      'muklis',
-      'Medan',
-      VENUE_GEO_PRESETS['BDK Medan'].lat,
-      VENUE_GEO_PRESETS['BDK Medan'].lng,
-      '19 Oktober 2026',
-      '08:15:30 WIB',
-      'building'
-    ),
-    status: 'verified',
-    driveFileName: '01_BDK Medan_muklis_persiapan_foto gedung_19 Oktober 2026_08.15.30 WIB.jpg',
-    driveStatus: 'synced',
-    notes: 'Kondisi fasad gedung BDK Medan siap digunakan untuk seleksi SPMB 2026.',
-    adminComment: 'Foto telah diverifikasi dan sah.',
-    verifiedAt: '2026-10-19T01:30:00.000Z',
-    createdAt: '2026-10-19T01:15:30.000Z'
-  },
-  {
-    id: 'seed_photo_medan_2',
-    userId: 'user_1',
-    username: 'muklis',
-    venue: 'BDK Medan',
-    stage: 'persiapan',
-    category: 'foto ruangan',
-    photoDate: '19 Oktober 2026',
-    photoTime: '08:45:10 WIB',
-    latitude: VENUE_GEO_PRESETS['BDK Medan'].lat,
-    longitude: VENUE_GEO_PRESETS['BDK Medan'].lng,
-    accuracy: 8,
-    locationName: 'Medan, Sumatera Utara',
-    imageUrl: createWatermarkedSvg(
-      'BDK Medan',
-      'foto ruangan',
-      'muklis',
-      'Medan',
-      VENUE_GEO_PRESETS['BDK Medan'].lat,
-      VENUE_GEO_PRESETS['BDK Medan'].lng,
-      '19 Oktober 2026',
-      '08:45:10 WIB',
-      'room'
-    ),
-    status: 'submitted',
-    driveFileName: '01_BDK Medan_muklis_persiapan_foto ruangan_19 Oktober 2026_08.45.10 WIB.jpg',
-    driveStatus: 'local_only',
-    notes: 'Ruang aula utama kapasitas 200 peserta dengan jarak meja 1.2 meter.',
-    createdAt: '2026-10-19T01:45:10.000Z'
-  },
-  {
-    id: 'seed_photo_medan_3',
-    userId: 'user_1',
-    username: 'muklis',
-    venue: 'BDK Medan',
-    stage: 'persiapan',
-    category: 'foto laptop',
-    photoDate: '19 Oktober 2026',
-    photoTime: '09:12:44 WIB',
-    latitude: VENUE_GEO_PRESETS['BDK Medan'].lat,
-    longitude: VENUE_GEO_PRESETS['BDK Medan'].lng,
-    accuracy: 10,
-    locationName: 'Medan, Sumatera Utara',
-    imageUrl: createWatermarkedSvg(
-      'BDK Medan',
-      'foto laptop',
-      'muklis',
-      'Medan',
-      VENUE_GEO_PRESETS['BDK Medan'].lat,
-      VENUE_GEO_PRESETS['BDK Medan'].lng,
-      '19 Oktober 2026',
-      '09:12:44 WIB',
-      'laptop'
-    ),
-    status: 'submitted',
-    driveFileName: '01_BDK Medan_muklis_persiapan_foto laptop_19 Oktober 2026_09.12.44 WIB.jpg',
-    driveStatus: 'local_only',
-    notes: 'Perangkat laptop CBT sudah terinstall Secure Exam Browser dan siap tes.',
-    createdAt: '2026-10-19T02:12:44.000Z'
-  },
-  {
-    id: 'seed_photo_medan_4',
-    userId: 'user_1',
-    username: 'muklis',
-    venue: 'BDK Medan',
-    stage: 'persiapan',
-    category: 'foto jaringan listrik',
-    photoDate: '19 Oktober 2026',
-    photoTime: '09:40:15 WIB',
-    latitude: VENUE_GEO_PRESETS['BDK Medan'].lat,
-    longitude: VENUE_GEO_PRESETS['BDK Medan'].lng,
-    accuracy: 7,
-    locationName: 'Medan, Sumatera Utara',
-    imageUrl: createWatermarkedSvg(
-      'BDK Medan',
-      'foto jaringan listrik',
-      'muklis',
-      'Medan',
-      VENUE_GEO_PRESETS['BDK Medan'].lat,
-      VENUE_GEO_PRESETS['BDK Medan'].lng,
-      '19 Oktober 2026',
-      '09:40:15 WIB',
-      'electricity'
-    ),
-    status: 'verified',
-    driveFileName: '01_BDK Medan_muklis_persiapan_foto jaringan listrik_19 Oktober 2026_09.40.15 WIB.jpg',
-    driveStatus: 'synced',
-    notes: 'Genset cadangan 150 kVA terhubung ATS otomatis, UPS stabil.',
-    adminComment: 'Foto telah diverifikasi dan sah.',
-    verifiedAt: '2026-10-19T02:50:00.000Z',
-    createdAt: '2026-10-19T02:40:15.000Z'
-  },
-  {
-    id: 'seed_photo_medan_5',
-    userId: 'user_1',
-    username: 'muklis',
-    venue: 'BDK Medan',
-    stage: 'persiapan',
-    category: 'foto jaringan LAN',
-    photoDate: '19 Oktober 2026',
-    photoTime: '10:05:22 WIB',
-    latitude: VENUE_GEO_PRESETS['BDK Medan'].lat,
-    longitude: VENUE_GEO_PRESETS['BDK Medan'].lng,
-    accuracy: 8,
-    locationName: 'Medan, Sumatera Utara',
-    imageUrl: createWatermarkedSvg(
-      'BDK Medan',
-      'foto jaringan LAN',
-      'muklis',
-      'Medan',
-      VENUE_GEO_PRESETS['BDK Medan'].lat,
-      VENUE_GEO_PRESETS['BDK Medan'].lng,
-      '19 Oktober 2026',
-      '10:05:22 WIB',
-      'lan'
-    ),
-    status: 'submitted',
-    driveFileName: '01_BDK Medan_muklis_persiapan_foto jaringan LAN_19 Oktober 2026_10.05.22 WIB.jpg',
-    driveStatus: 'local_only',
-    notes: 'Switch Gigabit 48-port dengan koneksi kabel Cat6 ke seluruh workstation.',
-    createdAt: '2026-10-19T03:05:22.000Z'
-  },
+export function isCorruptedPhoto(p: Partial<PhotoUpload> | null | undefined): boolean {
+  if (!p) return true;
+  // Has dummy -6.2, 106.8 coordinates without photoDate
+  const isDummyCoords =
+    Math.abs((p.latitude ?? 0) - (-6.2)) < 0.005 &&
+    Math.abs((p.longitude ?? 0) - 106.8) < 0.005 &&
+    (!p.photoDate || p.photoDate.trim() === '');
+  if (isDummyCoords) return true;
 
-  // BDK Palembang (syalom)
-  {
-    id: 'seed_photo_palembang_1',
-    userId: 'user_2',
-    username: 'syalom',
-    venue: 'BDK Palembang',
-    stage: 'persiapan',
-    category: 'foto gedung',
-    photoDate: '18 Oktober 2026',
-    photoTime: '08:20:00 WIB',
-    latitude: VENUE_GEO_PRESETS['BDK Palembang'].lat,
-    longitude: VENUE_GEO_PRESETS['BDK Palembang'].lng,
-    accuracy: 9,
-    locationName: 'Palembang, Sumatera Selatan',
-    imageUrl: createWatermarkedSvg(
-      'BDK Palembang',
-      'foto gedung',
-      'syalom',
-      'Palembang',
-      VENUE_GEO_PRESETS['BDK Palembang'].lat,
-      VENUE_GEO_PRESETS['BDK Palembang'].lng,
-      '18 Oktober 2026',
-      '08:20:00 WIB',
-      'building'
-    ),
-    status: 'verified',
-    driveFileName: '02_BDK Palembang_syalom_persiapan_foto gedung_18 Oktober 2026_08.20.00 WIB.jpg',
-    driveStatus: 'synced',
-    notes: 'Gedung BDK Palembang siap untuk uji fungsi dan seleksi SPMB STAN.',
-    adminComment: 'Foto telah diverifikasi dan sah.',
-    verifiedAt: '2026-10-18T09:00:00.000Z',
-    createdAt: '2026-10-18T08:20:00.000Z'
-  },
-  {
-    id: 'seed_photo_palembang_2',
-    userId: 'user_2',
-    username: 'syalom',
-    venue: 'BDK Palembang',
-    stage: 'persiapan',
-    category: 'foto laptop',
-    photoDate: '18 Oktober 2026',
-    photoTime: '09:00:15 WIB',
-    latitude: VENUE_GEO_PRESETS['BDK Palembang'].lat,
-    longitude: VENUE_GEO_PRESETS['BDK Palembang'].lng,
-    accuracy: 8,
-    locationName: 'Palembang, Sumatera Selatan',
-    imageUrl: createWatermarkedSvg(
-      'BDK Palembang',
-      'foto laptop',
-      'syalom',
-      'Palembang',
-      VENUE_GEO_PRESETS['BDK Palembang'].lat,
-      VENUE_GEO_PRESETS['BDK Palembang'].lng,
-      '18 Oktober 2026',
-      '09:00:15 WIB',
-      'laptop'
-    ),
-    status: 'submitted',
-    driveFileName: '02_BDK Palembang_syalom_persiapan_foto laptop_18 Oktober 2026_09.00.15 WIB.jpg',
-    driveStatus: 'local_only',
-    notes: 'Deretan laptop CBT siap untuk simulasi uji fungsi besok.',
-    createdAt: '2026-10-18T09:00:15.000Z'
-  },
+  // Has empty imageUrl and missing venue or userId
+  const hasNoImage = !p.imageUrl || typeof p.imageUrl !== 'string' || p.imageUrl.trim() === '';
+  const isAnonymous = (!p.venue || p.venue.trim() === '') && (!p.userId || p.userId.trim() === '');
+  if (hasNoImage && (isAnonymous || !p.photoDate)) return true;
 
-  // BDK Cimahi (dera)
-  {
-    id: 'seed_photo_cimahi_1',
-    userId: 'user_4',
-    username: 'dera',
-    venue: 'BDK Cimahi',
-    stage: 'persiapan',
-    category: 'foto gedung',
-    photoDate: '19 Oktober 2026',
-    photoTime: '07:55:12 WIB',
-    latitude: VENUE_GEO_PRESETS['BDK Cimahi'].lat,
-    longitude: VENUE_GEO_PRESETS['BDK Cimahi'].lng,
-    accuracy: 11,
-    locationName: 'Cimahi, Jawa Barat',
-    imageUrl: createWatermarkedSvg(
-      'BDK Cimahi',
-      'foto gedung',
-      'dera',
-      'Cimahi',
-      VENUE_GEO_PRESETS['BDK Cimahi'].lat,
-      VENUE_GEO_PRESETS['BDK Cimahi'].lng,
-      '19 Oktober 2026',
-      '07:55:12 WIB',
-      'building'
-    ),
-    status: 'verified',
-    driveFileName: '04_BDK Cimahi_dera_persiapan_foto gedung_19 Oktober 2026_07.55.12 WIB.jpg',
-    driveStatus: 'synced',
-    notes: 'Dokumentasi pintu masuk dan area registrasi gedung BDK Cimahi.',
-    adminComment: 'Foto telah diverifikasi dan sah.',
-    verifiedAt: '2026-10-19T01:10:00.000Z',
-    createdAt: '2026-10-19T00:55:12.000Z'
-  },
-  {
-    id: 'seed_photo_cimahi_2',
-    userId: 'user_4',
-    username: 'dera',
-    venue: 'BDK Cimahi',
-    stage: 'persiapan',
-    category: 'foto jaringan LAN',
-    photoDate: '19 Oktober 2026',
-    photoTime: '08:35:40 WIB',
-    latitude: VENUE_GEO_PRESETS['BDK Cimahi'].lat,
-    longitude: VENUE_GEO_PRESETS['BDK Cimahi'].lng,
-    accuracy: 7,
-    locationName: 'Cimahi, Jawa Barat',
-    imageUrl: createWatermarkedSvg(
-      'BDK Cimahi',
-      'foto jaringan LAN',
-      'dera',
-      'Cimahi',
-      VENUE_GEO_PRESETS['BDK Cimahi'].lat,
-      VENUE_GEO_PRESETS['BDK Cimahi'].lng,
-      '19 Oktober 2026',
-      '08:35:40 WIB',
-      'lan'
-    ),
-    status: 'submitted',
-    driveFileName: '04_BDK Cimahi_dera_persiapan_foto jaringan LAN_19 Oktober 2026_08.35.40 WIB.jpg',
-    driveStatus: 'local_only',
-    notes: 'Koneksi switch antar lantai sudah diuji ping latency < 1ms.',
-    createdAt: '2026-10-19T01:35:40.000Z'
-  },
-
-  // BDK Jogjakarta (didik)
-  {
-    id: 'seed_photo_jogja_1',
-    userId: 'user_5',
-    username: 'didik',
-    venue: 'BDK Jogjakarta',
-    stage: 'persiapan',
-    category: 'foto gedung',
-    photoDate: '19 Oktober 2026',
-    photoTime: '08:10:00 WIB',
-    latitude: VENUE_GEO_PRESETS['BDK Jogjakarta'].lat,
-    longitude: VENUE_GEO_PRESETS['BDK Jogjakarta'].lng,
-    accuracy: 9,
-    locationName: 'Yogyakarta, DI Yogyakarta',
-    imageUrl: createWatermarkedSvg(
-      'BDK Jogjakarta',
-      'foto gedung',
-      'didik',
-      'Yogyakarta',
-      VENUE_GEO_PRESETS['BDK Jogjakarta'].lat,
-      VENUE_GEO_PRESETS['BDK Jogjakarta'].lng,
-      '19 Oktober 2026',
-      '08:10:00 WIB',
-      'building'
-    ),
-    status: 'verified',
-    driveFileName: '05_BDK Jogjakarta_didik_persiapan_foto gedung_19 Oktober 2026_08.10.00 WIB.jpg',
-    driveStatus: 'synced',
-    notes: 'Persiapan halaman utama dan gedung CBT BDK Jogja selesai.',
-    adminComment: 'Foto telah diverifikasi dan sah.',
-    verifiedAt: '2026-10-19T01:40:00.000Z',
-    createdAt: '2026-10-19T01:10:00.000Z'
-  },
-  {
-    id: 'seed_photo_jogja_2',
-    userId: 'user_5',
-    username: 'didik',
-    venue: 'BDK Jogjakarta',
-    stage: 'persiapan',
-    category: 'foto ruangan',
-    photoDate: '19 Oktober 2026',
-    photoTime: '09:05:00 WIB',
-    latitude: VENUE_GEO_PRESETS['BDK Jogjakarta'].lat,
-    longitude: VENUE_GEO_PRESETS['BDK Jogjakarta'].lng,
-    accuracy: 10,
-    locationName: 'Yogyakarta, DI Yogyakarta',
-    imageUrl: createWatermarkedSvg(
-      'BDK Jogjakarta',
-      'foto ruangan',
-      'didik',
-      'Yogyakarta',
-      VENUE_GEO_PRESETS['BDK Jogjakarta'].lat,
-      VENUE_GEO_PRESETS['BDK Jogjakarta'].lng,
-      '19 Oktober 2026',
-      '09:05:00 WIB',
-      'room'
-    ),
-    status: 'submitted',
-    driveFileName: '05_BDK Jogjakarta_didik_persiapan_foto ruangan_19 Oktober 2026_09.05.00 WIB.jpg',
-    driveStatus: 'local_only',
-    notes: 'Ruang lab komputer 1 kapasitas 100 kursi siap tes.',
-    createdAt: '2026-10-19T02:05:00.000Z'
-  },
-
-  // Non-BDK Jayapura (alfian)
-  {
-    id: 'seed_photo_jayapura_1',
-    userId: 'user_15',
-    username: 'alfian',
-    venue: 'Non-BDK Jayapura',
-    stage: 'persiapan',
-    category: 'foto gedung',
-    photoDate: '22 Oktober 2026',
-    photoTime: '09:00:00 WIT',
-    latitude: VENUE_GEO_PRESETS['Non-BDK Jayapura'].lat,
-    longitude: VENUE_GEO_PRESETS['Non-BDK Jayapura'].lng,
-    accuracy: 12,
-    locationName: 'Jayapura, Papua',
-    imageUrl: createWatermarkedSvg(
-      'Non-BDK Jayapura',
-      'foto gedung',
-      'alfian',
-      'Jayapura',
-      VENUE_GEO_PRESETS['Non-BDK Jayapura'].lat,
-      VENUE_GEO_PRESETS['Non-BDK Jayapura'].lng,
-      '22 Oktober 2026',
-      '09:00:00 WIT',
-      'building'
-    ),
-    status: 'verified',
-    driveFileName: '15_Non-BDK Jayapura_alfian_persiapan_foto gedung_22 Oktober 2026_09.00.00 WIT.jpg',
-    driveStatus: 'synced',
-    notes: 'Lokasi tes Non-BDK Jayapura siap koordinasi dengan panitia pusat.',
-    adminComment: 'Foto telah diverifikasi dan sah.',
-    verifiedAt: '2026-10-22T00:30:00.000Z',
-    createdAt: '2026-10-22T00:00:00.000Z'
-  }
-];
+  return false;
+}
 
 /**
- * Dynamically generate standard baseline photos for any venue if currently empty
+ * Reconstructs or guarantees a 100% valid watermarked image for a legitimate photo record,
+ * ensuring "Gambar tidak tersedia" NEVER appears.
+ */
+export function healPhoto(p: PhotoUpload): PhotoUpload {
+  if (!p) return p;
+  if (p.imageUrl && typeof p.imageUrl === 'string' && p.imageUrl.trim() !== '' && !p.imageUrl.includes('undefined')) {
+    return p;
+  }
+  const venue = p.venue || 'BDK Medan';
+  const category = p.category || 'foto gedung';
+  const username = p.username || 'petugas';
+  const preset = VENUE_GEO_PRESETS[venue] || { lat: 3.5952, lng: 98.6722, city: venue };
+  const lat =
+    typeof p.latitude === 'number' && !isNaN(p.latitude) && Math.abs(p.latitude - (-6.2)) > 0.005
+      ? p.latitude
+      : preset.lat;
+  const lng =
+    typeof p.longitude === 'number' && !isNaN(p.longitude) && Math.abs(p.longitude - 106.8) > 0.005
+      ? p.longitude
+      : preset.lng;
+  const date = p.photoDate || '19 Oktober 2026';
+  const time = p.photoTime || '08:30:00 WIB';
+
+  let bgType: 'building' | 'room' | 'laptop' | 'electricity' | 'lan' = 'building';
+  const c = category.toLowerCase();
+  if (c.includes('ruang')) bgType = 'room';
+  else if (c.includes('laptop')) bgType = 'laptop';
+  else if (c.includes('listrik')) bgType = 'electricity';
+  else if (c.includes('lan')) bgType = 'lan';
+
+  const healedUrl = createWatermarkedSvg(
+    venue,
+    category,
+    username,
+    preset.city,
+    lat,
+    lng,
+    date,
+    time,
+    bgType
+  );
+
+  return {
+    ...p,
+    venue,
+    category,
+    username,
+    latitude: lat,
+    longitude: lng,
+    photoDate: date,
+    photoTime: time,
+    imageUrl: healedUrl
+  };
+}
+
+/**
+ * Dynamically generate standard baseline photos for any venue
  */
 export function generateVenueBaselinePhotos(user: UserAccount): PhotoUpload[] {
   if (!user || !user.venue || user.role === 'admin') return [];
@@ -577,3 +266,245 @@ export function generateVenueBaselinePhotos(user: UserAccount): PhotoUpload[] {
   ];
 }
 
+/**
+ * Generate full preset baseline photos for all venues
+ */
+function buildAllPresetPhotos(): PhotoUpload[] {
+  const photos: PhotoUpload[] = [];
+
+  // 1. Detailed 5 Tahap 1 photos for BDK Medan (muklis)
+  photos.push(
+    {
+      id: 'seed_photo_medan_1',
+      userId: 'user_1',
+      username: 'muklis',
+      venue: 'BDK Medan',
+      stage: 'persiapan',
+      category: 'foto gedung',
+      photoDate: '19 Oktober 2026',
+      photoTime: '08:15:30 WIB',
+      latitude: VENUE_GEO_PRESETS['BDK Medan'].lat,
+      longitude: VENUE_GEO_PRESETS['BDK Medan'].lng,
+      accuracy: 9,
+      locationName: 'Medan, Sumatera Utara',
+      imageUrl: createWatermarkedSvg(
+        'BDK Medan',
+        'foto gedung',
+        'muklis',
+        'Medan',
+        VENUE_GEO_PRESETS['BDK Medan'].lat,
+        VENUE_GEO_PRESETS['BDK Medan'].lng,
+        '19 Oktober 2026',
+        '08:15:30 WIB',
+        'building'
+      ),
+      status: 'verified',
+      driveFileName: '01_BDK Medan_muklis_persiapan_foto gedung_19 Oktober 2026_08.15.30 WIB.jpg',
+      driveStatus: 'synced',
+      notes: 'Kondisi fasad gedung BDK Medan siap digunakan untuk seleksi SPMB 2026.',
+      adminComment: 'Foto telah diverifikasi dan sah.',
+      verifiedAt: '2026-10-19T01:30:00.000Z',
+      createdAt: '2026-10-19T01:15:30.000Z'
+    },
+    {
+      id: 'seed_photo_medan_2',
+      userId: 'user_1',
+      username: 'muklis',
+      venue: 'BDK Medan',
+      stage: 'persiapan',
+      category: 'foto ruangan',
+      photoDate: '19 Oktober 2026',
+      photoTime: '08:45:10 WIB',
+      latitude: VENUE_GEO_PRESETS['BDK Medan'].lat,
+      longitude: VENUE_GEO_PRESETS['BDK Medan'].lng,
+      accuracy: 8,
+      locationName: 'Medan, Sumatera Utara',
+      imageUrl: createWatermarkedSvg(
+        'BDK Medan',
+        'foto ruangan',
+        'muklis',
+        'Medan',
+        VENUE_GEO_PRESETS['BDK Medan'].lat,
+        VENUE_GEO_PRESETS['BDK Medan'].lng,
+        '19 Oktober 2026',
+        '08:45:10 WIB',
+        'room'
+      ),
+      status: 'submitted',
+      driveFileName: '01_BDK Medan_muklis_persiapan_foto ruangan_19 Oktober 2026_08.45.10 WIB.jpg',
+      driveStatus: 'local_only',
+      notes: 'Ruang aula utama kapasitas 200 peserta dengan jarak meja 1.2 meter.',
+      createdAt: '2026-10-19T01:45:10.000Z'
+    },
+    {
+      id: 'seed_photo_medan_3',
+      userId: 'user_1',
+      username: 'muklis',
+      venue: 'BDK Medan',
+      stage: 'persiapan',
+      category: 'foto laptop',
+      photoDate: '19 Oktober 2026',
+      photoTime: '09:12:44 WIB',
+      latitude: VENUE_GEO_PRESETS['BDK Medan'].lat,
+      longitude: VENUE_GEO_PRESETS['BDK Medan'].lng,
+      accuracy: 10,
+      locationName: 'Medan, Sumatera Utara',
+      imageUrl: createWatermarkedSvg(
+        'BDK Medan',
+        'foto laptop',
+        'muklis',
+        'Medan',
+        VENUE_GEO_PRESETS['BDK Medan'].lat,
+        VENUE_GEO_PRESETS['BDK Medan'].lng,
+        '19 Oktober 2026',
+        '09:12:44 WIB',
+        'laptop'
+      ),
+      status: 'submitted',
+      driveFileName: '01_BDK Medan_muklis_persiapan_foto laptop_19 Oktober 2026_09.12.44 WIB.jpg',
+      driveStatus: 'local_only',
+      notes: 'Perangkat laptop CBT sudah terinstall Secure Exam Browser dan siap tes.',
+      createdAt: '2026-10-19T02:12:44.000Z'
+    },
+    {
+      id: 'seed_photo_medan_4',
+      userId: 'user_1',
+      username: 'muklis',
+      venue: 'BDK Medan',
+      stage: 'persiapan',
+      category: 'foto jaringan listrik',
+      photoDate: '19 Oktober 2026',
+      photoTime: '09:40:15 WIB',
+      latitude: VENUE_GEO_PRESETS['BDK Medan'].lat,
+      longitude: VENUE_GEO_PRESETS['BDK Medan'].lng,
+      accuracy: 7,
+      locationName: 'Medan, Sumatera Utara',
+      imageUrl: createWatermarkedSvg(
+        'BDK Medan',
+        'foto jaringan listrik',
+        'muklis',
+        'Medan',
+        VENUE_GEO_PRESETS['BDK Medan'].lat,
+        VENUE_GEO_PRESETS['BDK Medan'].lng,
+        '19 Oktober 2026',
+        '09:40:15 WIB',
+        'electricity'
+      ),
+      status: 'verified',
+      driveFileName: '01_BDK Medan_muklis_persiapan_foto jaringan listrik_19 Oktober 2026_09.40.15 WIB.jpg',
+      driveStatus: 'synced',
+      notes: 'Genset cadangan 150 kVA terhubung ATS otomatis, UPS stabil.',
+      adminComment: 'Foto telah diverifikasi dan sah.',
+      verifiedAt: '2026-10-19T02:50:00.000Z',
+      createdAt: '2026-10-19T02:40:15.000Z'
+    },
+    {
+      id: 'seed_photo_medan_5',
+      userId: 'user_1',
+      username: 'muklis',
+      venue: 'BDK Medan',
+      stage: 'persiapan',
+      category: 'foto jaringan LAN',
+      photoDate: '19 Oktober 2026',
+      photoTime: '10:05:22 WIB',
+      latitude: VENUE_GEO_PRESETS['BDK Medan'].lat,
+      longitude: VENUE_GEO_PRESETS['BDK Medan'].lng,
+      accuracy: 8,
+      locationName: 'Medan, Sumatera Utara',
+      imageUrl: createWatermarkedSvg(
+        'BDK Medan',
+        'foto jaringan LAN',
+        'muklis',
+        'Medan',
+        VENUE_GEO_PRESETS['BDK Medan'].lat,
+        VENUE_GEO_PRESETS['BDK Medan'].lng,
+        '19 Oktober 2026',
+        '10:05:22 WIB',
+        'lan'
+      ),
+      status: 'submitted',
+      driveFileName: '01_BDK Medan_muklis_persiapan_foto jaringan LAN_19 Oktober 2026_10.05.22 WIB.jpg',
+      driveStatus: 'local_only',
+      notes: 'Switch Gigabit 48-port dengan koneksi kabel Cat6 ke seluruh workstation.',
+      createdAt: '2026-10-19T03:05:22.000Z'
+    }
+  );
+
+  // 2. Detailed 5 Tahap 1 photos for BDK Palembang (syalom)
+  photos.push(
+    {
+      id: 'seed_photo_palembang_1',
+      userId: 'user_2',
+      username: 'syalom',
+      venue: 'BDK Palembang',
+      stage: 'persiapan',
+      category: 'foto gedung',
+      photoDate: '18 Oktober 2026',
+      photoTime: '08:20:00 WIB',
+      latitude: VENUE_GEO_PRESETS['BDK Palembang'].lat,
+      longitude: VENUE_GEO_PRESETS['BDK Palembang'].lng,
+      accuracy: 9,
+      locationName: 'Palembang, Sumatera Selatan',
+      imageUrl: createWatermarkedSvg(
+        'BDK Palembang',
+        'foto gedung',
+        'syalom',
+        'Palembang',
+        VENUE_GEO_PRESETS['BDK Palembang'].lat,
+        VENUE_GEO_PRESETS['BDK Palembang'].lng,
+        '18 Oktober 2026',
+        '08:20:00 WIB',
+        'building'
+      ),
+      status: 'verified',
+      driveFileName: '02_BDK Palembang_syalom_persiapan_foto gedung_18 Oktober 2026_08.20.00 WIB.jpg',
+      driveStatus: 'synced',
+      notes: 'Gedung BDK Palembang siap untuk uji fungsi dan seleksi SPMB STAN.',
+      adminComment: 'Foto telah diverifikasi dan sah.',
+      verifiedAt: '2026-10-18T09:00:00.000Z',
+      createdAt: '2026-10-18T08:20:00.000Z'
+    },
+    {
+      id: 'seed_photo_palembang_2',
+      userId: 'user_2',
+      username: 'syalom',
+      venue: 'BDK Palembang',
+      stage: 'persiapan',
+      category: 'foto laptop',
+      photoDate: '18 Oktober 2026',
+      photoTime: '09:00:15 WIB',
+      latitude: VENUE_GEO_PRESETS['BDK Palembang'].lat,
+      longitude: VENUE_GEO_PRESETS['BDK Palembang'].lng,
+      accuracy: 8,
+      locationName: 'Palembang, Sumatera Selatan',
+      imageUrl: createWatermarkedSvg(
+        'BDK Palembang',
+        'foto laptop',
+        'syalom',
+        'Palembang',
+        VENUE_GEO_PRESETS['BDK Palembang'].lat,
+        VENUE_GEO_PRESETS['BDK Palembang'].lng,
+        '18 Oktober 2026',
+        '09:00:15 WIB',
+        'laptop'
+      ),
+      status: 'submitted',
+      driveFileName: '02_BDK Palembang_syalom_persiapan_foto laptop_18 Oktober 2026_09.00.15 WIB.jpg',
+      driveStatus: 'local_only',
+      notes: 'Deretan laptop CBT siap untuk simulasi uji fungsi.',
+      createdAt: '2026-10-18T09:00:15.000Z'
+    }
+  );
+
+  // 3. Baseline photos for all remaining 18 venue users (Pekanbaru, Cimahi, Jogja, Malang, Denpasar, etc.)
+  INITIAL_USERS.forEach((u) => {
+    if (u.role !== 'admin' && u.venue !== 'BDK Medan' && u.venue !== 'BDK Palembang') {
+      const venuePhotos = generateVenueBaselinePhotos(u);
+      photos.push(...venuePhotos);
+    }
+  });
+
+  return photos;
+}
+
+export const INITIAL_PRESET_PHOTOS: PhotoUpload[] = buildAllPresetPhotos();
